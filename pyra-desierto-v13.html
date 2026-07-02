@@ -193,8 +193,8 @@
     introDuration: 9,
     fov: 55,
     sway: 1,
-    fogDensity: 1,
-    coreEnergy: 1,
+    fogDensity: 0.3,
+    coreEnergy: 0.3,
     breathSep: 1.1,   // wave-ripple separation amplitude
     hoverSep: 1.5,    // extra separation under the cursor
     /* intro cinematic = the birth sequence: starts straight above the
@@ -312,6 +312,47 @@
   const stoneTex = makeSandstoneTexture(isMobile ? 1024 : 2048);
 
   /* ============================================================
+     CIRCULAR REVEAL — the physical floor materializes as an
+     expanding circle from the pyramid, in sync with the top-down
+     block materialization. Injected into materials via
+     onBeforeCompile (discard-based: opaque, shadow-safe, no
+     transparency sorting issues). `invert` fades blueprint lines
+     away INSIDE the circle as matter replaces them.
+  ============================================================ */
+  const revealUniforms = {
+    uRevealR: { value: 0 },     // current radius (world units)
+    uRevealW: { value: 5.0 }    // rim softness
+  };
+  function injectReveal(material, invert = false) {
+    material.onBeforeCompile = shader => {
+      shader.uniforms.uRevealR = revealUniforms.uRevealR;
+      shader.uniforms.uRevealW = revealUniforms.uRevealW;
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec3 vRevealW;')
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vec4 _rw = vec4(transformed, 1.0);
+          #ifdef USE_INSTANCING
+            _rw = instanceMatrix * _rw;
+          #endif
+          vRevealW = (modelMatrix * _rw).xyz;`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform float uRevealR;\nuniform float uRevealW;\nvarying vec3 vRevealW;')
+        .replace('#include <fog_fragment>', `
+          {
+            float dcirc = length(vRevealW.xz);
+            float rv = 1.0 - smoothstep(uRevealR - uRevealW, uRevealR, dcirc);
+            ${invert
+              ? 'gl_FragColor.a *= mix(1.0, 0.10, rv);'  // lines dissolve where matter exists
+              : `if (rv < 0.5) discard;
+                 float rim = smoothstep(uRevealR - 3.5, uRevealR - uRevealW * 0.4, dcirc);
+                 gl_FragColor.rgb += vec3(0.85, 0.92, 1.0) * rim * 1.4;`}
+          }
+          #include <fog_fragment>`);
+    };
+    material.needsUpdate = true;
+  }
+
+  /* ============================================================
      TERRAIN
   ============================================================ */
   const hash2 = (x, z) => { const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return s - Math.floor(s); };
@@ -358,9 +399,9 @@
   }
   const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
     map: sandTex, bumpMap: sandTex, bumpScale: 0.35,
-    color: 0xc4bbaa, roughness: 1, metalness: 0,
-    transparent: true, opacity: 0                     // materializes during the intro
+    color: 0xc4bbaa, roughness: 1, metalness: 0
   }));
+  injectReveal(ground.material);                       // materializes as a circle
   ground.receiveShadow = true;
   scene.add(ground);
 
@@ -369,7 +410,8 @@
   {
     const ROCK_N = isMobile ? 90 : 200;
     const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8d857a, roughness: 1, metalness: 0, flatShading: true, transparent: true, opacity: 0 });
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8d857a, roughness: 1, metalness: 0, flatShading: true });
+    injectReveal(rockMat);                              // rocks appear with the circle
     const rocks = new THREE.InstancedMesh(rockGeo, rockMat, ROCK_N);
     rocksMesh = rocks;
     const rd = new THREE.Object3D();
@@ -419,6 +461,7 @@
       color: 0xdfe9ff, transparent: true, opacity: 0,
       blending: THREE.AdditiveBlending, depthWrite: false
     }));
+    injectReveal(floorWire.material, true);            // lines fade where the floor is real
     scene.add(floorWire);
   }
 
@@ -1637,20 +1680,25 @@
       * THREE.MathUtils.smoothstep(seqP, 0.0, 0.2)
       * (1 - THREE.MathUtils.smoothstep(seqP, 0.78, 0.97));
 
-    /* physical world materializing in sync */
-    ground.material.opacity = matW;
-    rocksMesh.material.opacity = matW;
+    /* physical world materializing in sync:
+       the textured floor + rocks REVEAL as an expanding circle from
+       the pyramid, matched to the top-down block front */
+    revealUniforms.uRevealR.value = 430 * THREE.MathUtils.smoothstep(seqP, 0.08, 0.9);
+    const matC = THREE.MathUtils.smoothstep(seqP, 0.18, 0.55); // inner core wakes with the blocks
     starField.material.opacity = 0.85 * matW;
     cap.scale.setScalar(0.001 + THREE.MathUtils.smoothstep(seqP, 0.04, 0.16)); // apex first
+    core.scale.setScalar(0.001 + matC * 0.999);
+    coreHalo.scale.setScalar(0.001 + matC * 0.999);
     volUniforms.uDensity.value = CFG.fogDensity * (reduced ? 0.6 : 1) * matW;
 
-    /* white energy — intense, clean sci-fi light escaping the seams */
+    /* white energy — intense, clean sci-fi light escaping the seams
+       (wakes up with the block materialization: matC) */
     const E = (fracture.energy + waveActivity * 0.9) * CFG.coreEnergy;
-    coreLight.intensity = 3.0 * E;
-    coreLightLow.intensity = 1.0 * E;
-    coreHalo.material.opacity = 0.20 + 0.14 * (E - 1);
+    coreLight.intensity = 3.0 * E * matC;
+    coreLightLow.intensity = 1.0 * E * matC;
+    coreHalo.material.opacity = (0.20 + 0.14 * (E - 1)) * matC;
     cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
-    volUniforms.uEnergy.value = E * 1.15;
+    volUniforms.uEnergy.value = E * 1.15 * matC;
 
     /* wind: sand sheets scrolling + streaks racing across the floor
        (fades in with the materialization) */
