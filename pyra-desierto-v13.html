@@ -177,9 +177,25 @@
   <p class="text-[.52rem] tracking-[.12em] text-dust leading-[1.7] mt-2">Arrastra los ◆ para mover keyframes en el tiempo · clic en un ◆ para editar su posición X/Y/Z · arrastra el borde dorado para alargar/achicar la duración · clic/arrastra en el clip para hacer scrub con la cámara.</p>
 </section>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-<script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
+
 (() => {
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const isMobile = innerWidth < 700;
@@ -188,23 +204,23 @@
      CONFIG — edited live by the UI panel
   ============================================================ */
   const CFG = {
-    cam:  { x: -11.5, y: 15, z: 43 },
-    look: { x: 0,  y: 9.5, z: 0 },
+    cam:  { x: -6, y: 7.0, z: 46 },
+    look: { x: 4, y: 5.5, z: 0 },
     introDuration: 9,
-    fov: 55,
+    fov: 33,
     sway: 1,
-    fogDensity: 0.3,
-    coreEnergy: 0.3,
-    breathSep: 1.1,   // wave-ripple separation amplitude
-    hoverSep: 1.5,    // extra separation under the cursor
-    /* intro cinematic = the birth sequence: starts straight above the
-       pyramid and descends while everything materializes top-down.
-       t = normalized time 0..1 · first/last are locked in time */
+    fogDensity: 0.22,
+    coreEnergy: 0.9,
+    breathSep: 1.1,
+    hoverSep: 1.5,
+    exposure: 0.66,
+    bloom: 0.30,
+    blockGlow: 1.0,
     keyframes: [
-      { t: 0.0,  pos: { x: 2,   y: 88, z: 10 } },   // zenith: looking down
-      { t: 0.4,  pos: { x: 30,  y: 44, z: 58 } },
-      { t: 0.75, pos: { x: -20, y: 24, z: 60 } },
-      { t: 1.0,  pos: null }                        // null = final camera
+      { t: 0.0,  pos: { x: 2,   y: 88, z: 10 } },
+      { t: 0.4,  pos: { x: 34,  y: 30, z: 46 } },
+      { t: 0.75, pos: { x: -14, y: 12, z: 38 } },
+      { t: 1.0,  pos: null }
     ]
   };
 
@@ -221,990 +237,642 @@
 
   /* ================= RENDERER / SCENE ================= */
   const canvas = document.getElementById('scene');
-  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  const DPR = Math.min(devicePixelRatio, 1.5);
-  renderer.setPixelRatio(DPR);
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
   renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.75));
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = CFG.exposure;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x121110);
-  scene.fog = new THREE.FogExp2(0x1a1815, 0.005);
+  const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 400);
+  camera.position.set(0, 5, 30);
 
-  const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 900);
-
-  /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
-  scene.add(new THREE.AmbientLight(0x262220, 1.4));
-  scene.add(new THREE.HemisphereLight(0x2b2b33, 0x37322a, 0.6));
-  const keyLight = new THREE.DirectionalLight(0xcfc7b8, 1.0);
-  keyLight.position.set(-38, 46, 34);
-  keyLight.castShadow = true;
-  keyLight.shadow.mapSize.set(2048, 2048);
-  keyLight.shadow.camera.left = -45; keyLight.shadow.camera.right = 45;
-  keyLight.shadow.camera.top = 45;   keyLight.shadow.camera.bottom = -45;
-  keyLight.shadow.camera.near = 1;   keyLight.shadow.camera.far = 220;
-  keyLight.shadow.bias = -0.0006;
-  scene.add(keyLight);
-  const moonLight = new THREE.DirectionalLight(0xaab4cc, 0.35);
-  moonLight.position.set(40, 60, 30);
-  scene.add(moonLight);
-
-  /* ============================================================
-     PROCEDURAL HI-RES TEXTURES (no external assets)
-  ============================================================ */
-  function makeSandTexture(S) {
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#a3937a';
-    ctx.fillRect(0, 0, S, S);
-    const img = ctx.getImageData(0, 0, S, S), d = img.data;
-    for (let y = 0; y < S; y++) {
-      for (let x = 0; x < S; x++) {
-        const i = (y * S + x) * 4;
-        const ripple = Math.sin((x * 0.9 + y * 0.28) * 0.11 * (512 / S)) * 0.5
-                     + Math.sin((x * 0.35 - y * 0.9) * 0.045 * (512 / S)) * 0.3;
-        const grain = (Math.random() - 0.5) * 26;
-        const v = ripple * 15 + grain;
-        d[i]     = Math.max(0, Math.min(255, d[i]     + v));
-        d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + v * 0.96));
-        d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + v * 0.88));
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(26, 26);
-    return tex;
+  /* ================= TEXTURES (real CC0 PBR) ================= */
+  const texLoader = new THREE.TextureLoader();
+  function loadTex(url, srgb, rx, ry) {
+    const t = texLoader.load(url);
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(rx, ry);
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    return t;
   }
-
-  /* sandstone slab: strata bands + grain + darkened joints per block face */
-  function makeSandstoneTexture(S) {
-    const cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d');
-    ctx.fillStyle = '#b0a184';
-    ctx.fillRect(0, 0, S, S);
-    const img = ctx.getImageData(0, 0, S, S), d = img.data;
-    for (let y = 0; y < S; y++) {
-      const strata = Math.sin(y * 0.035) * 8 + Math.sin(y * 0.11 + 2.0) * 4;
-      for (let x = 0; x < S; x++) {
-        const i = (y * S + x) * 4;
-        const grain = (Math.random() - 0.5) * 34;
-        const pit = Math.random() > 0.995 ? -46 : 0;             // small erosion pits
-        // darker joints toward the tile edge → carved-block read
-        const ex = Math.min(x, S - x) / S, ey = Math.min(y, S - y) / S;
-        const edge = -(1 - Math.min(1, Math.min(ex, ey) * 14)) * 42;
-        const v = strata + grain + pit + edge;
-        d[i]     = Math.max(0, Math.min(255, d[i]     + v));
-        d[i + 1] = Math.max(0, Math.min(255, d[i + 1] + v * 0.95));
-        d[i + 2] = Math.max(0, Math.min(255, d[i + 2] + v * 0.86));
-      }
-    }
-    ctx.putImageData(img, 0, 0);
-    const tex = new THREE.CanvasTexture(cv);
-    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    return tex;
-  }
-
-  const sandTex = makeSandTexture(isMobile ? 512 : 1024);
-  const stoneTex = makeSandstoneTexture(isMobile ? 1024 : 2048);
-
-  /* ============================================================
-     CIRCULAR REVEAL — the physical floor materializes as an
-     expanding circle from the pyramid, in sync with the top-down
-     block materialization. Injected into materials via
-     onBeforeCompile (discard-based: opaque, shadow-safe, no
-     transparency sorting issues). `invert` fades blueprint lines
-     away INSIDE the circle as matter replaces them.
-  ============================================================ */
-  const revealUniforms = {
-    uRevealR: { value: 0 },     // current radius (world units)
-    uRevealW: { value: 5.0 }    // rim softness
+  const TEX = {
+    stoneColor: loadTex('assets/tex/stone_color.jpg', true, 1.6, 1.6),
+    stoneNrm:   loadTex('assets/tex/stone_normal.jpg', false, 1.6, 1.6),
+    stoneRgh:   loadTex('assets/tex/stone_rough.jpg', false, 1.6, 1.6),
+    stoneAO:    loadTex('assets/tex/stone_ao.jpg', false, 1.6, 1.6),
+    sandColor:  loadTex('assets/tex/sand_color.jpg', true, 14, 14),
+    sandNrm:    loadTex('assets/tex/sand_normal.jpg', false, 14, 14),
+    sandRgh:    loadTex('assets/tex/sand_rough.jpg', false, 14, 14),
+    sandAO:     loadTex('assets/tex/sand_ao.jpg', false, 14, 14)
   };
-  function injectReveal(material, invert = false) {
-    material.onBeforeCompile = shader => {
-      shader.uniforms.uRevealR = revealUniforms.uRevealR;
-      shader.uniforms.uRevealW = revealUniforms.uRevealW;
-      shader.vertexShader = shader.vertexShader
-        .replace('#include <common>', '#include <common>\nvarying vec3 vRevealW;')
-        .replace('#include <begin_vertex>', `#include <begin_vertex>
-          vec4 _rw = vec4(transformed, 1.0);
-          #ifdef USE_INSTANCING
-            _rw = instanceMatrix * _rw;
-          #endif
-          vRevealW = (modelMatrix * _rw).xyz;`);
-      shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform float uRevealR;\nuniform float uRevealW;\nvarying vec3 vRevealW;')
-        .replace('#include <fog_fragment>', `
-          {
-            float dcirc = length(vRevealW.xz);
-            float rv = 1.0 - smoothstep(uRevealR - uRevealW, uRevealR, dcirc);
-            ${invert
-              ? 'gl_FragColor.a *= mix(1.0, 0.10, rv);'  // lines dissolve where matter exists
-              : `if (rv < 0.5) discard;
-                 float rim = smoothstep(uRevealR - 3.5, uRevealR - uRevealW * 0.4, dcirc);
-                 gl_FragColor.rgb += vec3(0.85, 0.92, 1.0) * rim * 1.4;`}
-          }
-          #include <fog_fragment>`);
-    };
-    material.needsUpdate = true;
-  }
 
-  /* ============================================================
-     TERRAIN
-  ============================================================ */
-  const hash2 = (x, z) => { const s = Math.sin(x * 127.1 + z * 311.7) * 43758.5453; return s - Math.floor(s); };
-  const vnoise = (x, z) => {
-    const xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi;
-    const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
-    return hash2(xi, zi) * (1 - u) * (1 - v) + hash2(xi + 1, zi) * u * (1 - v)
-         + hash2(xi, zi + 1) * (1 - u) * v + hash2(xi + 1, zi + 1) * u * v;
-  };
-  const ridge = v => 1 - Math.abs(Math.sin(v));
-  const duneH = (x, z) => {
-    const dist = Math.hypot(x, z);
-    /* irregular sand accumulation near the pyramid */
-    const nearMask = THREE.MathUtils.smoothstep(dist, 14, 38);
-    const mounds = nearMask * (
-      2.6 * (vnoise(x * 0.045, z * 0.045) - 0.5) * 2 +
-      1.3 * (vnoise(x * 0.11 + 7.3, z * 0.11) - 0.5) * 2 +
-      0.4 * (vnoise(x * 0.3, z * 0.3 + 3.1) - 0.5) * 2
-    );
-    /* rolling hills and valleys in the mid-field */
-    const midMask = THREE.MathUtils.smoothstep(dist, 34, 80);
-    const hills = midMask * (
-      6.5 * (vnoise(x * 0.022 + 3.7, z * 0.022) - 0.5) * 2 +
-      4.0 * ridge(x * 0.02 - z * 0.014 + 2.6) +
-      2.2 * (vnoise(x * 0.06, z * 0.06 + 9.2) - 0.5) * 2
-    );
-    /* mountain range: closer, taller; softer & more diffuse with distance */
-    const far = THREE.MathUtils.smoothstep(dist, 52, 170);
-    const soften = 1 - THREE.MathUtils.smoothstep(dist, 170, 340) * 0.45; // far slopes smooth out
-    const mountains = far * soften * (
-      42 * ridge(x * 0.012 + z * 0.006 + 1.2) +
-      26 * ridge(z * 0.016 - x * 0.008 + 4.0) +
-      13 * Math.sin((x + z) * 0.02 + 2.0) +
-      10 * (vnoise(x * 0.02, z * 0.02) - 0.5) * 2
-    );
-    return mounds + Math.max(0, mounds) * 0.4 + hills + mountains;
-  };
-  const groundGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
-  groundGeo.rotateX(-Math.PI / 2);
-  {
-    const p = groundGeo.attributes.position;
-    for (let i = 0; i < p.count; i++) p.setY(i, duneH(p.getX(i), p.getZ(i)));
-    groundGeo.computeVertexNormals();
-  }
-  const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
-    map: sandTex, bumpMap: sandTex, bumpScale: 0.35,
-    color: 0xc4bbaa, roughness: 1, metalness: 0
-  }));
-  injectReveal(ground.material);                       // materializes as a circle
-  ground.receiveShadow = true;
-  scene.add(ground);
+  /* ================= LIGHTS ================= */
+  // moonlight key — cool, dim, long shadows
+  const moon = new THREE.DirectionalLight(0x8ea4cf, 0.22);
+  moon.position.set(-34, 42, 18);
+  moon.castShadow = true;
+  moon.shadow.mapSize.set(2048, 2048);
+  moon.shadow.camera.near = 1; moon.shadow.camera.far = 140;
+  moon.shadow.camera.left = -40; moon.shadow.camera.right = 40;
+  moon.shadow.camera.top = 40; moon.shadow.camera.bottom = -40;
+  moon.shadow.bias = -0.0004;
+  moon.shadow.normalBias = 0.03;
+  scene.add(moon);
+  scene.add(new THREE.HemisphereLight(0x1a2338, 0x070503, 0.16));
 
-  /* ---- small scattered rocks (instanced, desaturated) ---- */
-  let rocksMesh;
-  {
-    const ROCK_N = isMobile ? 90 : 200;
-    const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8d857a, roughness: 1, metalness: 0, flatShading: true });
-    injectReveal(rockMat);                              // rocks appear with the circle
-    const rocks = new THREE.InstancedMesh(rockGeo, rockMat, ROCK_N);
-    rocksMesh = rocks;
-    const rd = new THREE.Object3D();
-    const rc = new THREE.Color();
-    for (let i = 0; i < ROCK_N; i++) {
-      const ang = Math.random() * Math.PI * 2;
-      const rad = 16 + Math.pow(Math.random(), 0.7) * 120;
-      const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
-      const s = 0.14 + Math.pow(Math.random(), 2.2) * 0.9;
-      rd.position.set(x, duneH(x, z) + s * 0.35, z);
-      rd.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-      rd.scale.set(s * (0.8 + Math.random() * 0.6), s * (0.5 + Math.random() * 0.5), s * (0.8 + Math.random() * 0.6));
-      rd.updateMatrix();
-      rocks.setMatrixAt(i, rd.matrix);
-      const v = 0.8 + Math.random() * 0.35;
-      rc.setRGB(0.55 * v, 0.52 * v, 0.48 * v);
-      rocks.setColorAt(i, rc);
-    }
-    rocks.instanceColor.needsUpdate = true;
-    rocks.receiveShadow = true;
-    scene.add(rocks);
-  }
-
-  /* ---- floor blueprint: white geometric wireframe of the terrain ----
-     Visible from the very start of the intro; the textured ground
-     materializes underneath it and the lines dissolve at the end. */
-  let floorWire;
-  {
-    const N = 64, SIZE = 480, step = SIZE / N, off = -SIZE / 2;
-    const pts = [];
-    const h = (x, z) => duneH(x, z) + 0.12;
-    for (let i = 0; i <= N; i += 2) {
-      for (let j = 0; j < N; j++) {
-        /* lines along X */
-        const z = off + i * step;
-        pts.push(off + j * step, h(off + j * step, z), z,
-                 off + (j + 1) * step, h(off + (j + 1) * step, z), z);
-        /* lines along Z */
-        const x = off + i * step;
-        pts.push(x, h(x, off + j * step), off + j * step,
-                 x, h(x, off + (j + 1) * step), off + (j + 1) * step);
-      }
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
-    floorWire = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: 0xdfe9ff, transparent: true, opacity: 0,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }));
-    injectReveal(floorWire.material, true);            // lines fade where the floor is real
-    scene.add(floorWire);
-  }
-
-  /* ============================================================
-     FRACTURED PYRAMID — aligned grid of RECTANGULAR stone slabs
-     (wider than tall, like masonry courses), sandstone, shadows
-  ============================================================ */
-  const CELL_XZ = 2.3, CELL_Y = 2.05, COUNT0 = 13;  // taller courses: 2.3 × 2.05 × 2.3
-  const LAYERS = (COUNT0 + 1) / 2;                  // 13,11,...,1 → 7 courses
-  const PYR_H = LAYERS * CELL_Y;
-  const PYR_BASE = (COUNT0 * CELL_XZ) / 2;
-  const UP = new THREE.Vector3(0, 1, 0);
-  const blocks = [];
-  for (let j = 0; j < LAYERS; j++) {
-    const count = COUNT0 - j * 2;
-    const half = (count * CELL_XZ) / 2;
-    const y = j * CELL_Y + CELL_Y / 2;
-    for (let a = 0; a < count; a++) {
-      for (let b = 0; b < count; b++) {
-        const interior = a > 0 && a < count - 1 && b > 0 && b < count - 1 && j < LAYERS - 1;
-        if (interior) continue;
-        const x = -half + CELL_XZ / 2 + a * CELL_XZ;
-        const z = -half + CELL_XZ / 2 + b * CELL_XZ;
-        const radial = new THREE.Vector3(x, 0, z);
-        const outward = radial.lengthSq() > 0.001
-          ? radial.clone().normalize().add(new THREE.Vector3(0, 0.3, 0)).normalize()
-          : new THREE.Vector3(0, 1, 0);
-        blocks.push({
-          home: new THREE.Vector3(x, y, z),
-          dir: outward,                                              // wave: radial escape
-          lift: outward.clone().multiplyScalar(0.35).add(UP).normalize(), // hover: mostly upward
-          amp: 0.75 + Math.random() * 0.5,
-          floatPhase: Math.random() * Math.PI * 2,
-          floatSpeed: 0.9 + Math.random() * 0.8,
-          spinAxis: new THREE.Vector3(Math.random() - .5, 1, Math.random() - .5).normalize(),
-          isStatic: j === 0,
-          inf: 0,
-          lastDisp: 0
-        });
-      }
-    }
-  }
-  const BS_XZ = CELL_XZ * 0.998, BS_Y = CELL_Y * 0.998;
-
-  const blockMat = new THREE.MeshStandardMaterial({
-    map: stoneTex, bumpMap: stoneTex, bumpScale: 0.12,
-    color: 0xffffff, roughness: 0.92, metalness: 0.03
-  });
-  const pyramidMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), blockMat, blocks.length);
-  pyramidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-  pyramidMesh.castShadow = true;
-  pyramidMesh.receiveShadow = true;
-  scene.add(pyramidMesh);
-  /* subtle per-block tint variation for a natural quarry look */
-  {
-    const c = new THREE.Color();
-    for (let i = 0; i < blocks.length; i++) {
-      const v = 0.86 + Math.random() * 0.2;
-      c.setRGB(v, v * (0.97 + Math.random() * 0.05), v * (0.92 + Math.random() * 0.06));
-      pyramidMesh.setColorAt(i, c);
-    }
-    pyramidMesh.instanceColor.needsUpdate = true;
-  }
-  const dummy = new THREE.Object3D();
-
-  /* white energy core inside — intense, clean sci-fi light */
-  const core = new THREE.Mesh(
-    new THREE.ConeGeometry(PYR_BASE * 0.88, PYR_H * 0.96, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
-  );
-  core.rotation.y = Math.PI / 4;
-  core.position.y = PYR_H * 0.47;
-  scene.add(core);
-  const coreHalo = new THREE.Mesh(
-    new THREE.ConeGeometry(PYR_BASE * 0.95, PYR_H * 1.02, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xeef4ff, transparent: true, opacity: 0.26, blending: THREE.AdditiveBlending, depthWrite: false })
-  );
-  coreHalo.rotation.y = Math.PI / 4;
-  coreHalo.position.y = PYR_H * 0.5;
-  scene.add(coreHalo);
-  const coreLight = new THREE.PointLight(0xf4f8ff, 3.4, 110, 1.8);
-  coreLight.position.set(0, PYR_H * 0.45, 0);
+  // warm core light — the heart of the pyramid
+  const coreLight = new THREE.PointLight(0xffa04a, 0, 0, 2);
+  coreLight.position.set(0, 7, 0);
   scene.add(coreLight);
-  /* second low light so the glow spills onto the sand through the base seams */
-  const coreLightLow = new THREE.PointLight(0xf4f8ff, 1.2, 46, 2);
-  coreLightLow.position.set(0, 2.2, 0);
-  scene.add(coreLightLow);
+  const coreLight2 = new THREE.PointLight(0xffb060, 0, 0, 2);
+  coreLight2.position.set(0, 13.5, 0);
+  scene.add(coreLight2);
+  const apexLight = new THREE.PointLight(0xfff3dd, 0, 0, 2);
+  apexLight.position.set(0, 15, 0);
+  scene.add(apexLight);
 
-  const proxy = new THREE.Mesh(
-    new THREE.ConeGeometry(PYR_BASE * 1.45, PYR_H * 1.15, 4, 1),
-    new THREE.MeshBasicMaterial({ visible: false })
-  );
-  proxy.rotation.y = Math.PI / 4;
-  proxy.position.y = PYR_H / 2;
-  scene.add(proxy);
-
-  const cap = new THREE.Mesh(
-    new THREE.ConeGeometry(1.5, 1.8, 4, 1),
-    new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff2d9, emissiveIntensity: 1.8, roughness: 0.35, flatShading: true })
-  );
-  cap.rotation.y = Math.PI / 4;
-  cap.position.y = PYR_H + 1.6;
-  scene.add(cap);
-  if (!reduced) {
-    gsap.to(cap.position, { y: PYR_H + 2.3, duration: 3.6, ease: 'sine.inOut', yoyo: true, repeat: -1 });
-    gsap.to(cap.rotation, { y: Math.PI / 4 + Math.PI * 2, duration: 52, ease: 'none', repeat: -1 });
-  }
-
-  /* ============================================================
-     WAVE-RIPPLE IDLE — energy escapes at SPECIFIC points
-     Emitters on the faces send expanding rings; only blocks the
-     ring is crossing open, then close behind it. Nothing global.
-  ============================================================ */
-  const EMITTERS = [
-    { p: new THREE.Vector3( 8.5, 3.6,  9.0), speed: 2.0, phase: 0.0,  maxR: 17 },
-    { p: new THREE.Vector3(-9.5, 5.8,  3.5), speed: 1.6, phase: 4.0,  maxR: 16 },
-    { p: new THREE.Vector3( 2.5, 9.4, -8.5), speed: 1.8, phase: 8.0,  maxR: 15 },
-    { p: new THREE.Vector3(-4.5, 2.8, -9.5), speed: 2.2, phase: 2.5,  maxR: 17 },
-    { p: new THREE.Vector3( 5.5, 11.6, 2.5), speed: 1.4, phase: 6.0,  maxR: 14 }
-  ];
-  const RING_W = 1.7; // gaussian width of the travelling ring
-
-  function waveField(home, t) {
-    let w = 0;
-    for (let k = 0; k < EMITTERS.length; k++) {
-      const E = EMITTERS[k];
-      const cycle = E.maxR / E.speed + 2.5;              // travel + rest between pulses
-      const local = (t + E.phase) % cycle;
-      const r = local * E.speed;
-      if (r > E.maxR) continue;                          // resting
-      const d = home.distanceTo(E.p);
-      const g = Math.exp(-((d - r) * (d - r)) / (RING_W * RING_W));
-      w += g * (1 - r / E.maxR);                         // ring fades as it expands
-    }
-    return Math.min(1, w);
-  }
-
-  const fracture = { energy: 1.3 };
-  if (!reduced) gsap.to(fracture, { energy: 1.9, duration: 5.5, ease: 'sine.inOut', yoyo: true, repeat: -1 });
-
-  const raycaster = new THREE.Raycaster();
-  const pointerNDC = new THREE.Vector2(10, 10);
-  const hitPoint = new THREE.Vector3();
-  let hasHit = false;
-  window.addEventListener('pointermove', e => {
-    pointerNDC.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
-  });
-  function updateHover() {
-    if (!state.introDone) {
-      if (hasHit) { hasHit = false; cursor.classList.remove('is-pyramid'); }
-      return;
-    }
-    raycaster.setFromCamera(pointerNDC, camera);
-    const hits = raycaster.intersectObject(proxy);
-    const nowHit = hits.length > 0;
-    if (nowHit) hitPoint.copy(hits[0].point);
-    if (nowHit !== hasHit) {
-      hasHit = nowHit;
-      cursor.classList.toggle('is-pyramid', nowHit);
+  /* ================= TERRAIN ================= */
+  // fbm noise (CPU) for dune displacement
+  const P = new Uint8Array(512);
+  (() => {
+    const p = [...Array(256).keys()];
+    let s = 1337;
+    const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+    for (let i = 255; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [p[i], p[j]] = [p[j], p[i]]; }
+    for (let i = 0; i < 512; i++) P[i] = p[i & 255];
+  })();
+  function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+  function grad(h, x, y) {
+    switch (h & 3) {
+      case 0: return x + y;
+      case 1: return -x + y;
+      case 2: return x - y;
+      default: return -x - y;
     }
   }
-
-  /* ============================================================
-     SCI-FI TECH OVERLAY (screen-space SVG over the facade)
-     Small numbered nodes on the most-influenced blocks, joined by
-     hairline connectors, plus a crosshair readout at the scan
-     point — a holographic survey over the traditional stone.
-  ============================================================ */
-  const overlay = document.getElementById('techOverlay');
-  const SVGNS = 'http://www.w3.org/2000/svg';
-  const OV_N = 6;
-  const ovPoly = document.createElementNS(SVGNS, 'polyline');
-  ovPoly.setAttribute('fill', 'none');
-  ovPoly.setAttribute('stroke', 'rgba(239,228,207,0.55)');
-  ovPoly.setAttribute('stroke-width', '0.6');
-  overlay.appendChild(ovPoly);
-  const ovNodes = [];
-  for (let i = 0; i < OV_N; i++) {
-    const g = document.createElementNS(SVGNS, 'g');
-    const ring = document.createElementNS(SVGNS, 'circle');
-    ring.setAttribute('r', '5'); ring.setAttribute('fill', 'none');
-    ring.setAttribute('stroke', 'rgba(239,228,207,0.5)');
-    ring.setAttribute('stroke-width', '0.6');
-    const dot = document.createElementNS(SVGNS, 'circle');
-    dot.setAttribute('r', '1.1'); dot.setAttribute('fill', '#efe4cf');
-    const tx = document.createElementNS(SVGNS, 'text');
-    tx.setAttribute('fill', 'rgba(239,228,207,0.85)');
-    tx.setAttribute('font-size', '8.5');
-    tx.setAttribute('font-family', 'IBM Plex Mono, monospace');
-    tx.setAttribute('letter-spacing', '1');
-    g.appendChild(ring); g.appendChild(dot); g.appendChild(tx);
-    g.style.display = 'none';
-    overlay.appendChild(g);
-    ovNodes.push({ g, ring, dot, tx });
-  }
-  /* crosshair + readout at the scan point */
-  const ovCross = document.createElementNS(SVGNS, 'g');
-  ovCross.innerHTML =
-    '<line x1="-9" y1="0" x2="-3" y2="0" stroke="rgba(216,162,74,0.9)" stroke-width="0.7"/>' +
-    '<line x1="3" y1="0" x2="9" y2="0" stroke="rgba(216,162,74,0.9)" stroke-width="0.7"/>' +
-    '<line x1="0" y1="-9" x2="0" y2="-3" stroke="rgba(216,162,74,0.9)" stroke-width="0.7"/>' +
-    '<line x1="0" y1="3" x2="0" y2="9" stroke="rgba(216,162,74,0.9)" stroke-width="0.7"/>' +
-    '<line class="ldr" x1="10" y1="-10" x2="34" y2="-26" stroke="rgba(239,228,207,0.4)" stroke-width="0.6"/>' +
-    '<text class="l1" x="38" y="-30" fill="#efe4cf" font-size="8.5" font-family="IBM Plex Mono, monospace" letter-spacing="1"></text>' +
-    '<text class="l2" x="38" y="-19" fill="rgba(239,228,207,0.55)" font-size="8" font-family="IBM Plex Mono, monospace" letter-spacing="1"></text>';
-  ovCross.style.display = 'none';
-  overlay.appendChild(ovCross);
-  const ovL1 = ovCross.querySelector('.l1'), ovL2 = ovCross.querySelector('.l2');
-
-  let ovAlpha = 0;
-  const _proj = new THREE.Vector3();
-  function projectToScreen(v3) {
-    _proj.copy(v3).project(camera);
-    if (_proj.z > 1) return null;
-    return { x: (_proj.x * 0.5 + 0.5) * innerWidth, y: (-_proj.y * 0.5 + 0.5) * innerHeight };
-  }
-  function updateOverlay() {
-    const target = (hasHit && state.introDone) ? 1 : 0;
-    ovAlpha += (target - ovAlpha) * 0.08;
-    overlay.style.opacity = ovAlpha.toFixed(3);
-    if (ovAlpha < 0.02) { ovCross.style.display = 'none'; ovNodes.forEach(n => n.g.style.display = 'none'); return; }
-
-    /* pick the K most-influenced blocks (inf is smoothed → stable set) */
-    const picked = [];
-    for (let i = 0; i < blocks.length; i++) {
-      const B = blocks[i];
-      if (B.isStatic || B.inf < 0.14) continue;
-      picked.push({ i, B });
-    }
-    picked.sort((a, b) => b.B.inf - a.B.inf);
-    const nodes = picked.slice(0, OV_N);
-
-    const pts = [];
-    for (let k = 0; k < OV_N; k++) {
-      const slot = ovNodes[k];
-      if (k >= nodes.length) { slot.g.style.display = 'none'; continue; }
-      const { i, B } = nodes[k];
-      _v.copy(B.home).addScaledVector(B.dir, B.lastDisp);
-      const s = projectToScreen(_v);
-      if (!s) { slot.g.style.display = 'none'; continue; }
-      slot.g.style.display = '';
-      slot.g.setAttribute('transform', `translate(${s.x.toFixed(1)},${s.y.toFixed(1)})`);
-      slot.ring.setAttribute('r', (4 + B.inf * 3).toFixed(1));
-      slot.tx.setAttribute('x', 9); slot.tx.setAttribute('y', -6);
-      slot.tx.textContent = String(i).padStart(3, '0') + ' · ' + B.lastDisp.toFixed(2);
-      pts.push(s);
-    }
-    /* hairline connectors, chained left→right for a clean data-viz read */
-    pts.sort((a, b) => a.x - b.x);
-    ovPoly.setAttribute('points', pts.map(p => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' '));
-
-    const hs = projectToScreen(hitPoint);
-    if (hs) {
-      ovCross.style.display = '';
-      ovCross.setAttribute('transform', `translate(${hs.x.toFixed(1)},${hs.y.toFixed(1)})`);
-      ovL1.textContent = 'SCAN ' + nodes.length.toString().padStart(2, '0') + ' NODOS';
-      ovL2.textContent = 'X' + hitPoint.x.toFixed(1) + ' Y' + hitPoint.y.toFixed(1) + ' Z' + hitPoint.z.toFixed(1);
-    } else {
-      ovCross.style.display = 'none';
-    }
-  }
-
-  const _v = new THREE.Vector3();
-  const _q = new THREE.Quaternion();
-  const HOVER_R = 9, EASE_IN = 0.045, EASE_OUT = 0.022;
-  let waveActivity = 0; // fed to core light / fog
-  let seqP = 0;         // birth progress (set each frame from the timeline)
-  function updatePyramid(t) {
-    let act = 0;
-    const tw = reduced ? t * 0.3 : t;
-    /* materialization front: sweeps from above the apex down to the base */
-    const revealY = THREE.MathUtils.lerp(PYR_H + 2.5, -2, THREE.MathUtils.smoothstep(seqP, 0.06, 0.85));
-    for (let i = 0; i < blocks.length; i++) {
-      const B = blocks[i];
-      /* how materialized this block is (0 hidden → 1 solid) */
-      let m = THREE.MathUtils.clamp((B.home.y - revealY) / 2.6, 0, 1);
-      m = m * m * (3 - 2 * m);
-      if (m < 0.003) {
-        dummy.position.copy(B.home);
-        dummy.scale.setScalar(0.0001);
-        dummy.quaternion.set(0, 0, 0, 1);
-        dummy.updateMatrix();
-        pyramidMesh.setMatrixAt(i, dummy.matrix);
-        continue;
-      }
-      if (B.isStatic) {
-        dummy.position.copy(B.home);
-        dummy.position.y += (1 - m) * 1.4;
-        dummy.quaternion.set(0, 0, 0, 1);
-        dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
-        dummy.updateMatrix();
-        pyramidMesh.setMatrixAt(i, dummy.matrix);
-        continue;
-      }
-      let target = 0;
-      if (hasHit) {
-        const d = _v.copy(B.home).distanceTo(hitPoint);
-        target = Math.pow(THREE.MathUtils.smoothstep(1 - d / HOVER_R, 0, 1), 1.5);
-      }
-      B.inf += (target - B.inf) * (target > B.inf ? EASE_IN : EASE_OUT);
-      const si = B.inf;
-
-      const wave = waveField(B.home, tw) * B.amp * m;
-      act += wave;
-
-      /* wave: slides outward along its radial dir */
-      dummy.position.copy(B.home).addScaledVector(B.dir, wave * CFG.breathSep);
-      dummy.position.y += (1 - m) * 1.4;               // soft drop-in while materializing
-      /* hover: the block levitates — mostly upward lift + gentle bob,
-         as if suspended mid-assembly over the structure */
-      if (si > 0.002) {
-        const bob = Math.sin(tw * B.floatSpeed + B.floatPhase) * 0.22 * si;
-        dummy.position.addScaledVector(B.lift, si * CFG.hoverSep);
-        dummy.position.y += bob;
-        _q.setFromAxisAngle(B.spinAxis, si * (0.12 + Math.sin(tw * 0.6 + B.floatPhase) * 0.06));
-        dummy.quaternion.copy(_q);
-      } else {
-        dummy.quaternion.set(0, 0, 0, 1);
-      }
-      B.lastDisp = wave * CFG.breathSep + si * CFG.hoverSep;
-
-      dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
-      dummy.updateMatrix();
-      pyramidMesh.setMatrixAt(i, dummy.matrix);
-    }
-    waveActivity += ((act / blocks.length) * 6 - waveActivity) * 0.08;
-    pyramidMesh.instanceMatrix.needsUpdate = true;
-  }
-
-  /* ---- stars ---- */
-  let starField;
-  {
-    const n = 900, pos = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      const th = Math.random() * Math.PI * 2, ph = Math.random() * Math.PI * 0.42, r = 380;
-      pos[i * 3] = r * Math.sin(ph) * Math.cos(th);
-      pos[i * 3 + 1] = 40 + r * Math.cos(ph) * 0.8;
-      pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    starField = new THREE.Points(g, new THREE.PointsMaterial({
-      color: 0xcdd6ef, size: 0.8, transparent: true, opacity: 0.85, fog: false
-    }));
-    scene.add(starField);
-  }
-
-  /* ============================================================
-     WIND-BLOWN SAND — clearly visible advection
-     1) Two large tileable "sand sheets" scrolling fast just above
-        the floor (the unmistakable read of wind dragging sand).
-     2) Bright additive streaks concentrated in the camera corridor.
-  ============================================================ */
-  function makeStreakTexture() {
-    const W = 256, H = 32, cv = document.createElement('canvas');
-    cv.width = W; cv.height = H;
-    const ctx = cv.getContext('2d');
-    const g = ctx.createLinearGradient(0, 0, W, 0);
-    g.addColorStop(0, 'rgba(230,220,196,0)');
-    g.addColorStop(0.35, 'rgba(230,220,196,0.75)');
-    g.addColorStop(0.75, 'rgba(230,220,196,0.4)');
-    g.addColorStop(1, 'rgba(230,220,196,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
-    const v = ctx.createLinearGradient(0, 0, 0, H);
-    v.addColorStop(0, 'rgba(0,0,0,1)');
-    v.addColorStop(0.5, 'rgba(0,0,0,0)');
-    v.addColorStop(1, 'rgba(0,0,0,1)');
-    ctx.globalCompositeOperation = 'destination-out';
-    ctx.fillStyle = v;
-    ctx.fillRect(0, 0, W, H);
-    return new THREE.CanvasTexture(cv);
-  }
-  /* horizontally tileable sheet of wind-streaked sand */
-  function makeSheetTexture() {
-    const S = 512, cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, S, S);
-    for (let i = 0; i < 150; i++) {
-      const y = Math.random() * S;
-      const w = 50 + Math.random() * 220;
-      const h = 0.8 + Math.random() * 2.4;
-      const x = Math.random() * S;
-      const a = 0.05 + Math.random() * 0.20;
-      const g = ctx.createLinearGradient(x, 0, x + w, 0);
-      g.addColorStop(0, 'rgba(232,222,198,0)');
-      g.addColorStop(0.4, `rgba(232,222,198,${a})`);
-      g.addColorStop(1, 'rgba(232,222,198,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, w, h);
-      ctx.fillRect(x - S, y, w, h);           // duplicate for seamless wrap
-    }
-    const tex = new THREE.CanvasTexture(cv);
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    return tex;
-  }
-  const streakTex = makeStreakTexture();
-  const sheetTex = makeSheetTexture();
-
-  const sandSheets = [];
-  [
-    { y: 0.45, repeat: 4, opacity: 0.5, speed: 0.28, rotY: 0 },
-    { y: 0.95, repeat: 3, opacity: 0.3, speed: 0.17, rotY: 0.18 }
-  ].forEach(cfg => {
-    const tex = sheetTex.clone();
-    tex.needsUpdate = true;
-    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
-    tex.repeat.set(cfg.repeat, cfg.repeat);
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(260, 260),
-      new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, opacity: cfg.opacity,
-        blending: THREE.AdditiveBlending, depthWrite: false, color: 0xbfb49a
-      })
+  function noise2(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    const u = fade(x), v = fade(y);
+    const a = P[X] + Y, b = P[X + 1] + Y;
+    return THREE.MathUtils.lerp(
+      THREE.MathUtils.lerp(grad(P[a], x, y), grad(P[b], x - 1, y), u),
+      THREE.MathUtils.lerp(grad(P[a + 1], x, y - 1), grad(P[b + 1], x - 1, y - 1), u),
+      v
     );
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.rotation.z = cfg.rotY;
-    mesh.position.y = cfg.y;
-    mesh.userData = { tex, speed: cfg.speed, baseO: cfg.opacity };
-    scene.add(mesh);
-    sandSheets.push(mesh);
-  });
-
-  const streaks = [];
-  const STREAK_N = reduced ? 40 : (isMobile ? 70 : 150);
-  /* corridor the camera actually sees: around the pyramid & foreground */
-  const WX = { min: -95, max: 95 }, WZ = { min: -55, max: 70 };
-  for (let i = 0; i < STREAK_N; i++) {
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
-      map: streakTex, transparent: true, depthWrite: false,
-      blending: THREE.AdditiveBlending,
-      color: 0xd9cdac, opacity: 0.20 + Math.random() * 0.22
-    }));
-    const x = WX.min + Math.random() * (WX.max - WX.min);
-    const z = WZ.min + Math.random() * (WZ.max - WZ.min);
-    sp.position.set(x, 0.3 + Math.random() * 1.7 + Math.max(0, duneH(x, z)), z);
-    sp.scale.set(8 + Math.random() * 13, 0.22 + Math.random() * 0.45, 1);
-    sp.userData = {
-      vx: 9 + Math.random() * 15,             // fast: wind, not fog
-      sway: Math.random() * Math.PI * 2,
-      baseO: sp.material.opacity
-    };
-    scene.add(sp);
-    streaks.push(sp);
+  }
+  function fbm(x, y, oct) {
+    let v = 0, a = 0.5, f = 1;
+    for (let i = 0; i < oct; i++) { v += a * noise2(x * f, y * f); a *= 0.5; f *= 2.03; }
+    return v;
+  }
+  function duneH(x, z) {
+    const d = Math.hypot(x, z);
+    const mask = THREE.MathUtils.smoothstep(d, 13, 27);
+    const rip = fbm(x * 0.012 + 7.3, z * 0.012 - 2.1, 4) * 11;
+    const mes = fbm(x * 0.05 - 3.7, z * 0.05 + 9.2, 3) * 1.9;
+    const mic = fbm(x * 0.28, z * 0.28, 2) * 0.16;
+    return (rip + mes + mic) * mask - 0.5 * (1 - mask);
   }
 
-  /* ============================================================
-     HOLOGRAPHIC BIRTH — the pyramid as a digital blueprint
-     · fine translucent white lines (deliberately incomplete)
-     · front entrance portal
-     · intense white core sphere, cold glow, slow pulse
-     · floating AI network: nodes + hairline links + tiny numbers
-     Runs INSIDE the timeline intro: the world materializes
-     top-down in sync with the wireframe (seqP-driven).
-  ============================================================ */
-  const holoGroup = new THREE.Group();
-  scene.add(holoGroup);
-
-  /* --- wireframe pyramid built from the real course grid ---
-     segments pushed APEX-FIRST so setDrawRange draws top → bottom */
-  let holoWire, holoWireGlow, holoWireTotal = 0;
+  const TER_W = 300, TER_SEG = isMobile ? 190 : 260;
+  const terGeo = new THREE.PlaneGeometry(TER_W, TER_W, TER_SEG, TER_SEG);
+  terGeo.rotateX(-Math.PI / 2);
   {
-    const pts = [];
-    const seg = (a, b) => { if (Math.random() > 0.24) pts.push(a.x, a.y, a.z, b.x, b.y, b.z); }; // ~24% missing → incomplete
-    const V = (x, y, z) => new THREE.Vector3(x, y, z);
-    for (let j = LAYERS; j >= 0; j--) {
-      const count = Math.max(1, COUNT0 - j * 2);
-      const half = j < LAYERS ? (count * CELL_XZ) / 2 : 0.7;
-      const y = j * CELL_Y;
-      /* corner slants up to the ring above (drawn before the lower ring) */
-      if (j < LAYERS) {
-        const nHalf = j + 1 < LAYERS ? ((COUNT0 - (j + 1) * 2) * CELL_XZ) / 2 : 0.7;
-        const ny = (j + 1) * CELL_Y;
-        [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([sx, sz]) => {
-          seg(V(sx * half, y, sz * half), V(sx * nHalf, ny, sz * nHalf));
+    const pos = terGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, duneH(pos.getX(i), pos.getZ(i)));
+    }
+    terGeo.computeVertexNormals();
+  }
+  const terMat = new THREE.MeshStandardMaterial({
+    color: 0x36322c,
+    map: TEX.sandColor,
+    normalMap: TEX.sandNrm,
+    normalScale: new THREE.Vector2(0.85, 0.85),
+    roughnessMap: TEX.sandRgh,
+    aoMap: TEX.sandAO,
+    aoMapIntensity: 0.9,
+    roughness: 1.0,
+    metalness: 0.0
+  });
+  const terrain = new THREE.Mesh(terGeo, terMat);
+  terrain.receiveShadow = true;
+  scene.add(terrain);
+
+  /* ============================================================
+     PYRAMID — stepped monolith, backlit alabaster blocks
+  ============================================================ */
+  const TIERS = 9, TIER_H = 1.35, TOP_S = 2.0;
+  const BLOCK_GAP = 0.42;
+  const corePos = new THREE.Vector3(0, 7, 0);
+  const blocks = [];
+  const apexSeed = Math.random() * 10;
+
+  for (let t = 0; t < TIERS; t++) {
+    const s = THREE.MathUtils.lerp(15, TOP_S + 0.5, t / (TIERS - 1));
+    const count = t < 3 ? 4 : t < 6 ? 3 : t < 8 ? 2 : 1;
+    const cw = s / count;
+    const y = t * TIER_H + TIER_H / 2 - 0.4;
+    for (let ix = 0; ix < count; ix++) {
+      for (let iz = 0; iz < count; iz++) {
+        const x = -s / 2 + cw / 2 + ix * cw;
+        const z = -s / 2 + cw / 2 + iz * cw;
+        const edge = Math.max(Math.abs(x), Math.abs(z)) / (s / 2);
+        const jx = (fbm(x * 0.5 + t * 3.1, z * 0.5, 2)) * 0.14;
+        const jz = (fbm(x * 0.5, z * 0.5 + t * 7.7, 2)) * 0.14;
+        const w = cw - BLOCK_GAP * (0.7 + Math.random() * 0.9);
+        const d = cw - BLOCK_GAP * (0.7 + Math.random() * 0.9);
+        const h = TIER_H - BLOCK_GAP * (0.5 + Math.random() * 0.8);
+        blocks.push({
+          bx: x + jx, by: y, bz: z + jz,
+          sx: w, sy: h, sz: d,
+          ry: (Math.random() - 0.5) * 0.012,
+          tier: t, edge,
+          sxn: x / (s / 2), szn: z / (s / 2),
+          seed: Math.random()
         });
       }
-      /* ring at this course boundary, split per cell so gaps read as "unbuilt" */
-      const cells = Math.max(2, count);
-      for (let c = 0; c < cells; c++) {
-        const a = -half + (c / cells) * half * 2, b = -half + ((c + 1) / cells) * half * 2;
-        seg(V(a, y, -half), V(b, y, -half));
-        seg(V(a, y,  half), V(b, y,  half));
-        seg(V(-half, y, a), V(-half, y, b));
-        seg(V( half, y, a), V( half, y, b));
-      }
-    }
-    /* front entrance portal on the +Z face (drawn last, at ground level) */
-    const H0 = (COUNT0 * CELL_XZ) / 2;
-    const pw = 2.5, ph = CELL_Y * 2.1;
-    pts.push(-pw, 0, H0,  -pw, ph, H0);
-    pts.push( pw, 0, H0,   pw, ph, H0);
-    pts.push(-pw, ph, H0,  pw, ph, H0);
-    pts.push(-pw * 0.7, ph, H0,  0, ph + 1.1, H0);
-    pts.push( pw * 0.7, ph, H0,  0, ph + 1.1, H0);
-
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(pts), 3));
-    holoWireTotal = pts.length / 3;
-    holoWire = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: 0xffffff, transparent: true, opacity: 0.6,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }));
-    holoWireGlow = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: 0xcfe0ff, transparent: true, opacity: 0.16,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }));
-    holoWireGlow.scale.setScalar(1.012);
-    holoWire.geometry.setDrawRange(0, 0);
-    holoGroup.add(holoWire, holoWireGlow);
-  }
-
-  /* --- core sphere of intense white light --- */
-  function makeGlowTexture() {
-    const S = 128, cv = document.createElement('canvas');
-    cv.width = cv.height = S;
-    const ctx = cv.getContext('2d');
-    const g = ctx.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    g.addColorStop(0, 'rgba(255,255,255,0.9)');
-    g.addColorStop(0.35, 'rgba(220,232,255,0.35)');
-    g.addColorStop(1, 'rgba(220,232,255,0)');
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, S, S);
-    return new THREE.CanvasTexture(cv);
-  }
-  const holoCore = new THREE.Mesh(
-    new THREE.SphereGeometry(2.1, 24, 24),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
-  );
-  holoCore.position.set(0, PYR_H * 0.42, 0);
-  const holoCoreGlow = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: makeGlowTexture(), transparent: true, opacity: 0.85,
-    blending: THREE.AdditiveBlending, depthWrite: false, color: 0xeaf1ff
-  }));
-  holoCoreGlow.scale.set(16, 16, 1);
-  holoCoreGlow.position.copy(holoCore.position);
-  const holoLight = new THREE.PointLight(0xf2f6ff, 2.4, 90, 2);
-  holoLight.position.copy(holoCore.position);
-  holoGroup.add(holoCore, holoCoreGlow, holoLight);
-
-  /* --- floating AI network: nodes, hairline links, numbers --- */
-  const netNodes = [];
-  {
-    const N = 26;
-    while (netNodes.length < N) {
-      const th = Math.random() * Math.PI * 2;
-      const ph = Math.random() * Math.PI;
-      const p = new THREE.Vector3(
-        Math.sin(ph) * Math.cos(th) * (19 + Math.random() * 7),
-        6 + Math.cos(ph) * (10 + Math.random() * 4) + 4,
-        Math.sin(ph) * Math.sin(th) * (19 + Math.random() * 7)
-      );
-      /* keep the front-center clear so the net never covers the pyramid */
-      if (p.z > 13 && Math.abs(p.x) < 10 && p.y < PYR_H + 4) continue;
-      if (p.y < 1.5) p.y = 1.5 + Math.random() * 3;
-      netNodes.push(p);
     }
   }
-  let holoNetLines, holoNetTotal = 0, holoNetDots;
-  {
-    const lp = [];
-    for (let i = 0; i < netNodes.length; i++) {
-      /* connect each node to its 2 nearest neighbours (deduped) */
-      const dists = netNodes.map((p, k) => ({ k, d: k === i ? 1e9 : p.distanceTo(netNodes[i]) }))
-        .sort((a, b) => a.d - b.d).slice(0, 2);
-      dists.forEach(({ k }) => {
-        if (k > i) {
-          lp.push(netNodes[i].x, netNodes[i].y, netNodes[i].z, netNodes[k].x, netNodes[k].y, netNodes[k].z);
-        }
-      });
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(lp), 3));
-    holoNetTotal = lp.length / 3;
-    holoNetLines = new THREE.LineSegments(g, new THREE.LineBasicMaterial({
-      color: 0xdfe9ff, transparent: true, opacity: 0.3,
-      blending: THREE.AdditiveBlending, depthWrite: false
-    }));
-    holoNetLines.geometry.setDrawRange(0, 0);
-
-    const dp = new Float32Array(netNodes.length * 3);
-    netNodes.forEach((p, i) => { dp[i * 3] = p.x; dp[i * 3 + 1] = p.y; dp[i * 3 + 2] = p.z; });
-    const dg = new THREE.BufferGeometry();
-    dg.setAttribute('position', new THREE.BufferAttribute(dp, 3));
-    holoNetDots = new THREE.Points(dg, new THREE.PointsMaterial({
-      color: 0xffffff, size: 0.55, transparent: true, opacity: 0.9,
-      blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true
-    }));
-    holoGroup.add(holoNetLines, holoNetDots);
-  }
-
-  /* --- tiny flickering numbers over the network (screen-space SVG) --- */
-  const holoNetSvg = document.getElementById('holoNet');
-  const holoLabels = [];
-  for (let i = 0; i < 10; i++) {
-    const tx = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-    tx.setAttribute('fill', 'rgba(239,244,255,0.9)');
-    tx.setAttribute('font-size', '8');
-    tx.setAttribute('font-family', 'IBM Plex Mono, monospace');
-    tx.setAttribute('letter-spacing', '1');
-    holoNetSvg.appendChild(tx);
-    holoLabels.push({
-      el: tx,
-      node: Math.floor(Math.random() * netNodes.length),
-      a: 0, target: Math.random() > 0.4 ? 1 : 0,
-      until: Math.random() * 2,
-      text: (Math.random() * 9.999).toFixed(3)
-    });
-  }
-  const _hv = new THREE.Vector3();
-  function updateHoloLabels(t, visible) {
-    holoNetSvg.style.opacity = visible ? 1 : 0;
-    if (!visible) return;
-    for (const L of holoLabels) {
-      if (t > L.until) {
-        L.until = t + 0.7 + Math.random() * 1.6;
-        L.target = L.target > 0.5 ? 0 : 1;
-        if (L.target === 1) {
-          L.node = Math.floor(Math.random() * netNodes.length);
-          L.text = Math.random() > 0.5
-            ? (Math.random() * 9.999).toFixed(3)
-            : 'N' + String(Math.floor(Math.random() * 512)).padStart(3, '0');
-        }
-      }
-      L.a += (L.target - L.a) * 0.08;
-      _hv.copy(netNodes[L.node]);
-      holoGroup.localToWorld(_hv);
-      const s = projectToScreen(_hv);
-      if (!s) { L.el.setAttribute('opacity', 0); continue; }
-      L.el.setAttribute('x', (s.x + 6).toFixed(1));
-      L.el.setAttribute('y', (s.y - 5).toFixed(1));
-      L.el.setAttribute('opacity', L.a.toFixed(2));
-      L.el.textContent = L.text;
-    }
-  }
-  holoGroup.visible = false;
-
-  /* ============================================================
-     VOLUMETRIC RAYMARCHING FOG (depth-aware post pass)
-  ============================================================ */
-  const STEPS = isMobile ? 22 : 42;
-  const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR);
-  rt.texture.minFilter = THREE.LinearFilter;
-  rt.depthTexture = new THREE.DepthTexture(innerWidth * DPR, innerHeight * DPR);
-  rt.depthTexture.type = THREE.UnsignedIntType;
-
-  const postScene = new THREE.Scene();
-  const postCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
-  const volUniforms = {
-    tDiffuse: { value: rt.texture },
-    tDepth:   { value: rt.depthTexture },
-    uInvProj: { value: new THREE.Matrix4() },
-    uInvView: { value: new THREE.Matrix4() },
-    uCamPos:  { value: new THREE.Vector3() },
-    uCorePos: { value: new THREE.Vector3(0, PYR_H * 0.5, 0) },
-    uTime:    { value: 0 },
-    uEnergy:  { value: 1 },
-    uDensity: { value: reduced ? 0.6 : 1.0 }
-  };
-  const volMat = new THREE.ShaderMaterial({
-    uniforms: volUniforms,
-    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
-    fragmentShader: `
-      precision highp float;
-      varying vec2 vUv;
-      uniform sampler2D tDiffuse, tDepth;
-      uniform mat4 uInvProj, uInvView;
-      uniform vec3 uCamPos, uCorePos;
-      uniform float uTime, uDensity, uEnergy;
-      #define STEPS ${STEPS}
-
-      float hash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
-      float noise(vec3 x){
-        vec3 i = floor(x), f = fract(x);
-        f = f * f * (3.0 - 2.0 * f);
-        return mix(mix(mix(hash(i+vec3(0,0,0)), hash(i+vec3(1,0,0)), f.x),
-                       mix(hash(i+vec3(0,1,0)), hash(i+vec3(1,1,0)), f.x), f.y),
-                   mix(mix(hash(i+vec3(0,0,1)), hash(i+vec3(1,0,1)), f.x),
-                       mix(hash(i+vec3(0,1,1)), hash(i+vec3(1,1,1)), f.x), f.y), f.z);
-      }
-      float fbm(vec3 p){
-        float v = 0.0, a = 0.5;
-        for(int i = 0; i < 3; i++){ v += a * noise(p); p = p * 2.05 + vec3(13.1); a *= 0.5; }
-        return v;
-      }
-      // fast wind advection close to the ground
-      float density(vec3 p){
-        float low  = exp(-max(p.y, 0.0) * 0.38) * 2.2;
-        float haze = exp(-max(p.y, 0.0) * 0.09) * 0.55;
-        vec3 wind = vec3(uTime * 4.5, 0.0, uTime * 0.6);   // strong lateral wind
-        float n = fbm(p * 0.045 + wind * 0.05);
-        return (low + haze) * (0.55 + 0.75 * n) * 0.036 * uDensity;
-      }
-      vec3 worldPos(vec2 uv, float depth){
-        vec4 ndc  = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
-        vec4 view = uInvProj * ndc; view /= view.w;
-        return (uInvView * view).xyz;
-      }
-      void main(){
-        vec2 q = vUv - 0.5;
-        float ab = dot(q, q) * 0.012;
-        vec3 sceneCol = vec3(
-          texture2D(tDiffuse, vUv + q * ab).r,
-          texture2D(tDiffuse, vUv).g,
-          texture2D(tDiffuse, vUv - q * ab).b
-        );
-        float depth = texture2D(tDepth, vUv).x;
-        vec3 wpos = worldPos(vUv, depth);
-        vec3 ro = uCamPos;
-        vec3 rd = normalize(wpos - ro);
-        float maxD = min(length(wpos - ro), 380.0);
-        float stepL = maxD / float(STEPS);
-        float jitter = fract(sin(dot(vUv * 941.13, vec2(12.9898, 78.233))) * 43758.5453);
-        vec3 p = ro + rd * stepL * jitter;
-        float T = 1.0;
-        vec3 L = vec3(0.0);
-        for(int i = 0; i < STEPS; i++){
-          float d = density(p);
-          float cd = length(p - uCorePos);
-          vec3 light =
-            vec3(0.74, 0.71, 0.64) * 0.32 +                                              // grey dusty ambient
-            vec3(0.96, 0.98, 1.00) * (7.0 / (1.0 + cd * cd * 0.030)) * 0.085 * uEnergy + // intense white core
-            vec3(0.17, 0.18, 0.24) * 0.10;                                               // cool night sky
-          float a = d * stepL;
-          L += T * light * a;
-          T *= exp(-a);
-          if(T < 0.015) break;
-          p += rd * stepL;
-        }
-        vec3 col = sceneCol * T + L;
-        col *= 1.0 - dot(q, q) * 0.5;
-        gl_FragColor = vec4(col, 1.0);
-      }
-    `,
-    depthWrite: false, depthTest: false
+  // apex cap
+  blocks.push({
+    bx: 0, by: TIERS * TIER_H + 0.55 - 0.4, bz: 0,
+    sx: TOP_S + 0.5, sy: 1.1, sz: TOP_S + 0.5,
+    ry: 0, tier: TIERS, edge: 1, sxn: 0, szn: 0, seed: 0.5, apex: true
   });
-  postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), volMat));
+
+  // star texture for emissive specks
+  function makeSpeckTex() {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d');
+    const r = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+    r.addColorStop(0, 'rgba(255,255,255,1)');
+    r.addColorStop(0.25, 'rgba(255,255,255,.85)');
+    r.addColorStop(0.6, 'rgba(255,255,255,.18)');
+    r.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = r;
+    g.fillRect(0, 0, 64, 64);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  }
+  const speckTex = makeSpeckTex();
+
+  const blockGeo = new RoundedBoxGeometry(1, 1, 1, 2, 0.045);
+  const blockMat = new THREE.MeshStandardMaterial({
+    map: TEX.stoneColor,
+    normalMap: TEX.stoneNrm,
+    normalScale: new THREE.Vector2(1.1, 1.1),
+    roughnessMap: TEX.stoneRgh,
+    aoMap: TEX.stoneAO,
+    aoMapIntensity: 1.0,
+    color: 0xa89678,
+    roughness: 0.92,
+    metalness: 0.0
+  });
+
+  blockMat.onBeforeCompile = shader => {
+    shader.uniforms.uTime = { value: 0 };
+    shader.uniforms.uCorePos = { value: corePos };
+    shader.uniforms.uCoreEnergy = { value: CFG.coreEnergy };
+    shader.uniforms.uBlockGlow = { value: CFG.blockGlow };
+    shader.uniforms.uSpeck = { value: speckTex };
+    blockMat.userData.shader = shader;
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vWorldPos;
+        varying vec3 vObjNrm;
+        attribute float aGlow;
+        varying float vGlow;
+        varying float vSeed;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vObjNrm = normal;
+        vGlow = aGlow;
+        #ifdef USE_INSTANCING
+          vSeed = fract(instanceMatrix[3][0] * 0.173 + instanceMatrix[3][1] * 0.311 + instanceMatrix[3][2] * 0.417);
+        #else
+          vSeed = 0.5;
+        #endif`);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+        uniform float uTime;
+        uniform vec3 uCorePos;
+        uniform float uCoreEnergy;
+        uniform float uBlockGlow;
+        uniform sampler2D uSpeck;
+        varying vec3 vWorldPos;
+        varying vec3 vObjNrm;
+        varying float vGlow;
+        varying float vSeed;
+        float phash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float pnoise(vec2 p){
+          vec2 i = floor(p), f = fract(p);
+          vec2 u = f * f * (3.0 - 2.0 * f);
+          return mix(mix(phash(i), phash(i + vec2(1,0)), u.x),
+                     mix(phash(i + vec2(0,1)), phash(i + vec2(1,1)), u.x), u.y);
+        }`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        {
+          vec3 wAbs = abs(vObjNrm);
+          vec2 uvp = wAbs.y > 0.5 ? vWorldPos.xz : (wAbs.x > 0.5 ? vWorldPos.zy : vWorldPos.xy);
+          float rghVar = pnoise(uvp * 2.1) - 0.5;
+          roughnessFactor = clamp(roughnessFactor + rghVar * 0.22, 0.4, 1.0);
+        }`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          vec3 wAbs = abs(vObjNrm);
+          vec2 uvp = wAbs.y > 0.5 ? vWorldPos.xz : (wAbs.x > 0.5 ? vWorldPos.zy : vWorldPos.xy);
+          // macro tonal drift kills the UV-repeat read
+          float macro = pnoise(vWorldPos.xz * 0.05 + vWorldPos.y * 0.07);
+          diffuseColor.rgb *= 0.86 + macro * 0.26;
+          // warm inner light — alabaster lit from the core
+          float coreI = uCoreEnergy * uBlockGlow * smoothstep(9.5, 2.2, distance(vWorldPos, uCorePos));
+          coreI *= 0.75 + 0.5 * vSeed;
+          totalEmissiveRadiance += vec3(1.0, 0.52, 0.20) * coreI * 1.1;
+          // apex block: lantern-bright warm skin
+          float apexBoost = uBlockGlow * (1.0 - step(0.001, abs(vGlow))) * step(12.0, vWorldPos.y);
+          // fracture glow — seams between blocks catch the light
+          float seam = smoothstep(0.15, 0.9, vGlow);
+          float breath = 0.72 + 0.28 * sin(uTime * 0.9 + vSeed * 6.2831);
+          totalEmissiveRadiance += vec3(1.0, 0.5, 0.2) * (seam * uBlockGlow * 0.55 * breath + apexBoost * 0.65);
+          // sparse warm specks — glowing veins in the stone
+          vec2 cellUv = uvp * 1.9 + vSeed * 17.0;
+          vec2 cellId = floor(cellUv);
+          vec2 cellPt = vec2(phash(cellId), phash(cellId + 7.7));
+          float sd = length(fract(cellUv) - cellPt);
+          float sel = step(0.94, phash(cellId + 3.3));
+          float tw = 0.55 + 0.45 * sin(uTime * (1.1 + phash(cellId + 5.1) * 1.7) + phash(cellId + 9.7) * 6.2831);
+          float speck = sel * smoothstep(0.09, 0.015, sd) * tw;
+          totalEmissiveRadiance += vec3(1.0, 0.62, 0.3) * speck * uBlockGlow * (0.35 + coreI * 2.2);
+        }`);
+  };
+
+  const pyGeo = blockGeo.clone();
+  const count = blocks.length;
+  const pyramid = new THREE.InstancedMesh(pyGeo, blockMat, count);
+  pyramid.castShadow = true;
+  pyramid.receiveShadow = true;
+  {
+    const m = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const eul = new THREE.Euler();
+    const sc = new THREE.Vector3();
+    const pv = new THREE.Vector3();
+    const col = new THREE.Color();
+    const glowArr = new Float32Array(count);
+    for (let i = 0; i < count; i++) {
+      const b = blocks[i];
+      eul.set(0, b.ry, 0);
+      q.setFromEuler(eul);
+      sc.set(b.sx, b.sy, b.sz);
+      pv.set(b.bx, b.by, b.bz);
+      m.compose(pv, q, sc);
+      pyramid.setMatrixAt(i, m);
+      const v = 0.86 + b.seed * 0.18;
+      col.setRGB(v, v * (0.96 + b.seed * 0.05), v * (0.9 + b.seed * 0.06));
+      if (b.apex) col.setRGB(1.0, 0.98, 0.94);
+      pyramid.setColorAt(i, col);
+      glowArr[i] = b.apex ? 0 : b.edge;
+    }
+    pyGeo.setAttribute('aGlow', new THREE.InstancedBufferAttribute(glowArr, 1));
+    pyramid.instanceMatrix.needsUpdate = true;
+    if (pyramid.instanceColor) pyramid.instanceColor.needsUpdate = true;
+  }
+  scene.add(pyramid);
 
   /* ============================================================
-     SOUND — synthesized desert wind (no external audio files)
-     Filtered noise + slow LFOs; live waveform drawn from the
-     analyser onto the footer canvas. Click toggles play/pause.
+     ATMOSPHERE — sky dome + stars + dust + holographic intro
+  ============================================================ */
+  const skyGeo = new THREE.SphereGeometry(220, 32, 24);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec3 vDir;
+      uniform float uTime;
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+      void main() {
+        float h = clamp(vDir.y, 0.0, 1.0);
+        vec3 zen = vec3(0.002, 0.003, 0.008);
+        vec3 hor = vec3(0.005, 0.006, 0.011);
+        vec3 col = mix(hor, zen, pow(h, 0.55));
+        vec2 sp = vDir.xz / max(vDir.y + 0.18, 0.02) * 34.0;
+        vec2 id = floor(sp);
+        vec2 gv = fract(sp) - 0.5;
+        float rn = hash(id);
+        vec2 off = vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5;
+        float d = length(gv - off * 0.82);
+        float star = smoothstep(0.055, 0.0, d) * step(0.982, rn);
+        float tw = 0.5 + 0.5 * sin(uTime * (0.6 + rn * 2.4) + rn * 40.0);
+        col += vec3(0.85, 0.88, 1.0) * star * tw * smoothstep(0.02, 0.24, vDir.y) * 0.85;
+        col += vec3(0.006, 0.004, 0.003) * pow(1.0 - h, 3.0);
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  });
+  scene.add(new THREE.Mesh(skyGeo, skyMat));
+
+  // drifting dust motes
+  const dustN = isMobile ? 260 : 520;
+  const dustGeo = new THREE.BufferGeometry();
+  {
+    const dp = new Float32Array(dustN * 3);
+    const dr = new Float32Array(dustN);
+    for (let i = 0; i < dustN; i++) {
+      const r = 12 + Math.random() * 55;
+      const a = Math.random() * Math.PI * 2;
+      dp[i * 3] = Math.cos(a) * r;
+      dp[i * 3 + 1] = Math.random() * 16 + 0.3;
+      dp[i * 3 + 2] = Math.sin(a) * r;
+      dr[i] = Math.random();
+    }
+    dustGeo.setAttribute('position', new THREE.BufferAttribute(dp, 3));
+    dustGeo.setAttribute('aR', new THREE.BufferAttribute(dr, 1));
+  }
+  const dustMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 }, uPx: { value: renderer.getPixelRatio() } },
+    vertexShader: `
+      attribute float aR;
+      uniform float uTime;
+      uniform float uPx;
+      varying float vA;
+      void main() {
+        vec3 p = position;
+        p.x += sin(uTime * 0.12 + aR * 40.0) * 2.2;
+        p.y += sin(uTime * 0.07 + aR * 60.0) * 0.9;
+        p.z += cos(uTime * 0.09 + aR * 50.0) * 2.2;
+        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        gl_Position = projectionMatrix * mv;
+        gl_PointSize = (1.6 + aR * 2.6) * uPx * (34.0 / -mv.z);
+        vA = 0.12 + aR * 0.30;
+      }`,
+    fragmentShader: `
+      varying float vA;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        float a = smoothstep(0.5, 0.05, d) * vA;
+        gl_FragColor = vec4(1.0, 0.82, 0.6, a);
+      }`
+  });
+  scene.add(new THREE.Points(dustGeo, dustMat));
+
+  // holographic scan ring (intro effect)
+  const holoGeo = new THREE.RingGeometry(0.1, 30, 96, 1);
+  holoGeo.rotateX(-Math.PI / 2);
+  const holoMat = new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    uniforms: { uT: { value: 0 }, uCol: { value: new THREE.Color(0x66d9ff) } },
+    vertexShader: `
+      varying vec2 vUv;
+      varying vec3 vP;
+      void main() {
+        vUv = uv;
+        vP = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      varying vec3 vP;
+      uniform float uT;
+      uniform vec3 uCol;
+      void main() {
+        float r = length(vP.xz) / 30.0;
+        float ring = smoothstep(0.02, 0.0, abs(r - uT) - 0.012);
+        float ring2 = smoothstep(0.01, 0.0, abs(r - uT * 0.85) - 0.006) * 0.5;
+        float sweep = pow(0.5 + 0.5 * sin(atan(vP.z, vP.x) * 2.0 + uT * 20.0), 3.0) * 0.12;
+        float a = (ring + ring2 + sweep * ring) * (1.0 - uT) * 0.8;
+        gl_FragColor = vec4(uCol, a);
+      }`
+  });
+  const holo = new THREE.Mesh(holoGeo, holoMat);
+  holo.position.y = 0.2;
+  holo.visible = false;
+  scene.add(holo);
+
+  /* ============================================================
+     INTERACTION — hover wave ripple + reveal intro
+  ============================================================ */
+  const ray = new THREE.Raycaster();
+  const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const hit = new THREE.Vector3(999, 0, 999);
+  const hitSm = new THREE.Vector3(999, 0, 999);
+  let hoverAmp = 0, hoverTarget = 0;
+  window.addEventListener('mousemove', e => {
+    const nx = (e.clientX / innerWidth) * 2 - 1;
+    const ny = -(e.clientY / innerHeight) * 2 + 1;
+    ray.setFromCamera(new THREE.Vector2(nx, ny), camera);
+    if (ray.ray.intersectPlane(groundPlane, hit)) {
+      const r = Math.hypot(hit.x, hit.z);
+      hoverTarget = r < 26 ? 1 : 0;
+      if (hoverTarget) hitSm.lerp(hit, 0.35);
+    } else hoverTarget = 0;
+  });
+  window.addEventListener('mouseleave', () => { hoverTarget = 0; });
+
+  const _m4 = new THREE.Matrix4();
+  const _q = new THREE.Quaternion();
+  const _e = new THREE.Euler();
+  const _s = new THREE.Vector3();
+  const _p = new THREE.Vector3();
+  function updateBlocks(t, dt) {
+    hoverAmp += (hoverTarget - hoverAmp) * Math.min(1, dt * 4);
+    const rev = state.reveal;
+    for (let i = 0; i < count; i++) {
+      const b = blocks[i];
+      const birthT = b.tier / (TIERS + 1);
+      const local = THREE.MathUtils.clamp((rev - birthT) * 3.2, 0, 1);
+      const ease = local * local * (3 - 2 * local);
+      let y = b.by + (1 - ease) * 26;
+      const sc = 0.001 + ease * 0.999;
+      // breathing wave-ripple
+      const d = Math.hypot(b.bx, b.bz);
+      const wave = Math.sin(t * 0.7 - d * 0.35) * 0.5 + 0.5;
+      const sep = wave * CFG.breathSep * 0.22;
+      // hover ripple
+      let hx = 0, hz = 0, hy = 0;
+      if (hoverAmp > 0.001) {
+        const hd = Math.hypot(b.bx - hitSm.x, b.bz - hitSm.z);
+        const infl = Math.exp(-hd * hd * 0.02) * hoverAmp;
+        hy = infl * CFG.hoverSep * 1.1;
+        hx = (b.sxn || 0) * infl * CFG.hoverSep * 0.4;
+        hz = (b.szn || 0) * infl * CFG.hoverSep * 0.4;
+      }
+      _e.set(0, b.ry + (1 - ease) * 0.5, 0);
+      _q.setFromEuler(_e);
+      _s.set(b.sx * sc, b.sy * sc, b.sz * sc);
+      _p.set(b.bx * (1 + sep * 0.03) + hx, y + hy, b.bz * (1 + sep * 0.03) + hz);
+      _m4.compose(_p, _q, _s);
+      pyramid.setMatrixAt(i, _m4);
+    }
+    pyramid.instanceMatrix.needsUpdate = true;
+  }
+
+  /* ============================================================
+     POST — composer: scene→RT, volumetric fog, bloom, grade, SMAA
+  ============================================================ */
+  const size = new THREE.Vector2();
+  renderer.getSize(size);
+  const rtScene = new THREE.WebGLRenderTarget(size.x, size.y, {
+    type: THREE.HalfFloatType,
+    depthTexture: new THREE.DepthTexture(size.x, size.y, THREE.UnsignedInt248Type)
+  });
+
+  const volShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      tDepth: { value: rtScene.depthTexture },
+      uTime: { value: 0 },
+      uDensity: { value: CFG.fogDensity },
+      uCamPos: { value: new THREE.Vector3() },
+      uInvProj: { value: new THREE.Matrix4() },
+      uInvView: { value: new THREE.Matrix4() },
+      uCorePos: { value: corePos },
+      uCoreEnergy: { value: CFG.coreEnergy },
+      uApexPos: { value: new THREE.Vector3(0, 15, 0) },
+      uColLow: { value: new THREE.Color(0x0a0d16) },
+      uColHigh: { value: new THREE.Color(0x3a2e26) },
+      uRes: { value: size.clone() }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform sampler2D tDiffuse;
+      uniform sampler2D tDepth;
+      uniform float uTime;
+      uniform float uDensity;
+      uniform vec3 uCamPos;
+      uniform mat4 uInvProj;
+      uniform mat4 uInvView;
+      uniform vec3 uCorePos;
+      uniform float uCoreEnergy;
+      uniform vec3 uApexPos;
+      uniform vec3 uColLow;
+      uniform vec3 uColHigh;
+      uniform vec2 uRes;
+
+      float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
+      float vnoise(vec2 p){
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        return mix(mix(hash(i), hash(i + vec2(1,0)), u.x),
+                   mix(hash(i + vec2(0,1)), hash(i + vec2(1,1)), u.x), u.y);
+      }
+      vec3 worldFromDepth(vec2 uv, float z) {
+        vec4 ndc = vec4(uv * 2.0 - 1.0, z * 2.0 - 1.0, 1.0);
+        vec4 vp = uInvProj * ndc;
+        vp /= vp.w;
+        vec4 wp = uInvView * vp;
+        return wp.xyz;
+      }
+      void main() {
+        vec4 col = texture2D(tDiffuse, vUv);
+        float z = texture2D(tDepth, vUv).x;
+        vec3 wp = worldFromDepth(vUv, z);
+        float rayLen = min(distance(wp, uCamPos), 120.0);
+        // diagonal two-tone fog (igloo recipe, adapted to desert night)
+        vec2 suv = gl_FragCoord.xy / uRes;
+        float grad = pow(clamp((suv.x + suv.y) * 0.5, 0.0, 1.0), 2.0);
+        vec3 fogCol = mix(uColLow, uColHigh, grad * 0.45) * 0.38;
+        // distance + height falloff
+        float distF = 1.0 - exp(-rayLen * rayLen * uDensity * 0.00006);
+        float hF = exp(-max(wp.y, 0.0) * 0.42);
+        float fog = clamp(distF * hF * 1.1, 0.0, 1.0) * smoothstep(60.0, 25.0, rayLen) * 0.8 + distF * 0.10;
+        // drifting fog banks
+        float bank = vnoise(wp.xz * 0.02 + uTime * 0.015) * vnoise(wp.xz * 0.006 - uTime * 0.008);
+        fog *= 0.8 + bank * 0.45;
+        // warm scatter around the core
+        float coreGlow = exp(-distance(wp, uCorePos) * 0.11) * uCoreEnergy;
+        float apexGlow = exp(-distance(wp, uApexPos) * 0.16) * uCoreEnergy;
+        fogCol += vec3(1.0, 0.5, 0.2) * coreGlow * 0.30;
+        fogCol += vec3(1.0, 0.85, 0.6) * apexGlow * 0.30;
+        col.rgb = mix(col.rgb, fogCol, fog * 0.9);
+        gl_FragColor = col;
+      }`
+  };
+
+  const gradeShader = {
+    uniforms: {
+      tDiffuse: { value: null },
+      uVig: { value: 0.42 },
+      uSat: { value: 0.80 },
+      uLift: { value: new THREE.Color(0x0a0c12) },
+      uGain: { value: new THREE.Color(0xfff1dd) },
+      uTime: { value: 0 }
+    },
+    vertexShader: `
+      varying vec2 vUv;
+      void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      varying vec2 vUv;
+      uniform sampler2D tDiffuse;
+      uniform float uVig;
+      uniform float uSat;
+      uniform vec3 uLift;
+      uniform vec3 uGain;
+      uniform float uTime;
+      void main() {
+        vec2 uv = vUv;
+        // slight chromatic aberration, radial
+        vec2 dir = uv - 0.5;
+        float r2 = dot(dir, dir);
+        float ca = 0.0016 * r2;
+        vec3 col;
+        col.r = texture2D(tDiffuse, uv + dir * ca).r;
+        col.g = texture2D(tDiffuse, uv).g;
+        col.b = texture2D(tDiffuse, uv - dir * ca).b;
+        // graphite blacks, warm highlights
+        col = col * uGain + uLift * 0.06;
+        // S-curve contrast
+        col = col * col * (3.0 - 2.0 * col) * 0.35 + col * 0.72;
+        // saturation
+        float l = dot(col, vec3(0.2126, 0.7152, 0.0722));
+        col = mix(vec3(l), col, uSat);
+        // vignette
+        float vig = 1.0 - uVig * smoothstep(0.18, 0.72, r2);
+        col *= vig;
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  };
+
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  // render scene to rtScene manually each frame (fog pass reads depth)
+  const volPass = new ShaderPass(volShader);
+  volPass.uniforms.tDepth.value = rtScene.depthTexture;
+  composer.addPass(volPass);
+  const bloomPass = new UnrealBloomPass(size.clone(), CFG.bloom, 0.45, 0.85);
+  composer.addPass(bloomPass);
+  const gradePass = new ShaderPass(gradeShader);
+  composer.addPass(gradePass);
+  composer.addPass(new OutputPass());
+  const smaaPass = new SMAAPass(size.x * renderer.getPixelRatio(), size.y * renderer.getPixelRatio());
+  composer.addPass(smaaPass);
+
+  /* ============================================================
+     SOUND — synthesized desert wind (unchanged)
   ============================================================ */
   let audioCtx = null, analyser = null, masterGain = null;
   let soundOn = true, audioReady = false;
@@ -1217,27 +885,22 @@
     if (audioCtx) return;
     const AC = window.AudioContext || window.webkitAudioContext;
     audioCtx = new AC();
-    // 2s loop of white noise
     const len = audioCtx.sampleRate * 2;
     const buf = audioCtx.createBuffer(1, len, audioCtx.sampleRate);
     const ch = buf.getChannelData(0);
     for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
     const src = audioCtx.createBufferSource();
     src.buffer = buf; src.loop = true;
-
     const band = audioCtx.createBiquadFilter();
     band.type = 'bandpass'; band.frequency.value = 520; band.Q.value = 0.7;
     const lp = audioCtx.createBiquadFilter();
     lp.type = 'lowpass'; lp.frequency.value = 1400;
-
-    // gusts: LFO on the bandpass frequency
     const lfo = audioCtx.createOscillator();
     lfo.frequency.value = 0.07;
     const lfoGain = audioCtx.createGain();
     lfoGain.gain.value = 260;
     lfo.connect(lfoGain).connect(band.frequency);
     lfo.start();
-    // breathing volume
     const lfo2 = audioCtx.createOscillator();
     lfo2.frequency.value = 0.045;
     const lfo2Gain = audioCtx.createGain();
@@ -1246,11 +909,9 @@
     masterGain.gain.value = 0.16;
     lfo2.connect(lfo2Gain).connect(masterGain.gain);
     lfo2.start();
-
     analyser = audioCtx.createAnalyser();
     analyser.fftSize = 256;
     waveData = new Uint8Array(analyser.frequencyBinCount);
-
     src.connect(band).connect(lp).connect(masterGain).connect(analyser).connect(audioCtx.destination);
     src.start();
     audioReady = true;
@@ -1260,7 +921,6 @@
     initAudio();
     if (audioCtx.state === 'suspended') {
       audioCtx.resume().catch(() => {});
-      // browsers may require a gesture: resume silently on the first one
       const unlock = () => {
         if (soundOn && audioCtx.state === 'suspended') audioCtx.resume();
         window.removeEventListener('pointerdown', unlock);
@@ -1303,10 +963,6 @@
   ============================================================ */
   const finalPos  = new THREE.Vector3(CFG.cam.x, CFG.cam.y, CFG.cam.z);
   const finalLook = new THREE.Vector3(CFG.look.x, CFG.look.y, CFG.look.z);
-  /* intro cinematic from timeline keyframes:
-     - spatial curve: Catmull-Rom through keyframe positions (smooth)
-     - timing: piecewise-linear remap p → curve-u using each kf's t,
-       so dragging a ◆ on the timeline retimes that leg of the flight */
   let introCurve = null, introTimes = [];
   function kfPos(k) {
     return k.pos ? new THREE.Vector3(k.pos.x, k.pos.y, k.pos.z) : finalPos.clone();
@@ -1330,14 +986,15 @@
   buildIntroPath();
   camera.position.copy(sampleIntroPos(0, new THREE.Vector3()));
 
-  const state = { intro: 0, introDone: false, phase: 'boot' };
+  const SKIP = new URLSearchParams(location.search).has('skipintro');
+  const state = { intro: SKIP ? 1 : 0, introDone: SKIP, phase: SKIP ? 'done' : 'boot', reveal: SKIP ? 1 : 0 };
   let mx = 0, my = 0;
   window.addEventListener('mousemove', e => {
     mx = (e.clientX / innerWidth - 0.5) * 2;
     my = (e.clientY / innerHeight - 0.5) * 2;
   });
 
-  /* ================= LOADER → SEQUENCE (the intro IS the birth) ================= */
+  /* ================= LOADER → SEQUENCE ================= */
   const loader = document.getElementById('loader');
   const loaderNum = document.getElementById('loaderNum');
   const loaderFill = document.getElementById('loaderFill');
@@ -1349,6 +1006,10 @@
     if (fake >= 100) { clearInterval(tick); startSequence(); }
   }, 70);
 
+  if (SKIP) {
+    const l = document.getElementById('loader'); if (l) l.style.display = 'none';
+    ['#nav', '#soundBtn', '#toolBtns'].forEach(sel => { const el = document.querySelector(sel); if (el) el.style.opacity = 1; });
+  }
   function startSequence() {
     gsap.to(loader, { opacity: 0, duration: 1.0, ease: 'power2.inOut', onComplete: () => loader.style.display = 'none' });
     gsap.delayedCall(0.4, tryAutoplay);
@@ -1364,6 +1025,7 @@
     state.intro = 0;
     state.introDone = false;
     state.phase = 'flight';
+    state.reveal = 0;
     buildIntroPath();
     if (introTween) introTween.kill();
     introTween = gsap.to(state, {
@@ -1372,6 +1034,20 @@
       ease: 'power2.inOut',
       onComplete: () => { state.introDone = true; state.phase = 'done'; }
     });
+    gsap.to(state, {
+      reveal: 1,
+      duration: reduced ? 0.01 : CFG.introDuration * 0.85,
+      ease: 'power2.out',
+      delay: reduced ? 0 : 0.4
+    });
+    if (!reduced) {
+      holo.visible = true;
+      holoMat.uniforms.uT.value = 0;
+      gsap.to(holoMat.uniforms.uT, {
+        value: 1, duration: 2.6, ease: 'power2.inOut', delay: 0.5,
+        onComplete: () => { holo.visible = false; }
+      });
+    }
   }
 
   /* ============================================================
@@ -1393,7 +1069,7 @@
     ['sway',  () => CFG.sway,            v => { CFG.sway = v; }],
     ['breathS', () => CFG.breathSep,     v => { CFG.breathSep = v; }],
     ['hoverS',  () => CFG.hoverSep,      v => { CFG.hoverSep = v; }],
-    ['fogD',  () => CFG.fogDensity,      v => { CFG.fogDensity = v; volUniforms.uDensity.value = v * (reduced ? 0.6 : 1); }],
+    ['fogD',  () => CFG.fogDensity,      v => { CFG.fogDensity = v; volPass.uniforms.uDensity.value = v * (reduced ? 0.6 : 1); }],
     ['coreE', () => CFG.coreEnergy,      v => { CFG.coreEnergy = v; }]
   ];
   bindings.forEach(([id, get, set]) => {
@@ -1418,18 +1094,13 @@
     }, null, 2);
     (navigator.clipboard ? navigator.clipboard.writeText(json) : Promise.reject())
       .then(() => { e.target.textContent = '✓ Copiado'; })
-      .catch(() => { console.log(json); e.target.textContent = '→ En consola'; });
+      .catch(() => { e.target.textContent = '✗ Error'; });
     setTimeout(() => { e.target.textContent = '⧉ Copiar config'; }, 1600);
   });
   bindLinkCursor(panel);
 
   /* ============================================================
      TIMELINE PANEL — Unity-style editor for the intro cinematic
-     · ruler fixed 0–15 s; the golden clip's width IS the duration
-     · drag the clip's right edge to stretch/shrink the intro
-     · drag ◆ keyframes horizontally to retime them
-     · click a ◆ to edit its position (X/Y/Z) in the inspector
-     · click/drag inside the clip to scrub — the camera previews live
   ============================================================ */
   const tl = { open: false, head: 0, playing: false };
   const MAX_S = 15;
@@ -1506,7 +1177,6 @@
     if (!isNaN(v)) { CFG.introDuration = THREE.MathUtils.clamp(v, 1, MAX_S); tlClip.style.width = (CFG.introDuration / MAX_S * 100) + '%'; }
   });
 
-  /* drag state machine: keyframe / duration handle / scrub */
   let drag = null;
   tlHandle.addEventListener('pointerdown', ev => {
     ev.stopPropagation(); ev.preventDefault();
@@ -1551,7 +1221,6 @@
   });
   window.addEventListener('pointerup', () => { drag = null; });
 
-  /* inspector edits */
   inT.addEventListener('input', () => {
     const i = selIdx;
     if (i > 0 && i < CFG.keyframes.length - 1) {
@@ -1569,12 +1238,12 @@
     });
   });
 
-  /* add / remove keyframes */
   document.getElementById('tlAdd').addEventListener('click', () => {
     const p = sampleIntroPos(tl.head, new THREE.Vector3());
-    CFG.keyframes.push({ t: THREE.MathUtils.clamp(tl.head, 0.03, 0.97), pos: { x: p.x, y: p.y, z: p.z } });
+    const tt = THREE.MathUtils.clamp(tl.head, 0.03, 0.97);
+    CFG.keyframes.push({ t: tt, pos: { x: p.x, y: p.y, z: p.z } });
     buildIntroPath();
-    selIdx = CFG.keyframes.findIndex(k => k.t === THREE.MathUtils.clamp(tl.head, 0.03, 0.97));
+    selIdx = CFG.keyframes.findIndex(k => k.t === tt);
     if (selIdx < 0) selIdx = 1;
     rebuildKfDOM(); updateInspector();
   });
@@ -1586,7 +1255,6 @@
     }
   });
 
-  /* open / close / play */
   function setTimelineOpen(v) {
     tl.open = v;
     tlPanel.classList.toggle('translate-y-full', !v);
@@ -1606,10 +1274,33 @@
   layout();
   bindLinkCursor(tlPanel);
 
+  /* ============================================================
+     TECH OVERLAY — hidden diagnostic (?debug=1 or triple-tap logo)
+  ============================================================ */
+  const techEl = document.getElementById('tech');
+  const showTech = new URLSearchParams(location.search).has('debug');
+  if (showTech && techEl) techEl.style.display = 'block';
+  let fpsAcc = 0, fpsN = 0, fpsShown = 0;
+  function updateTech(dt) {
+    if (!showTech || !techEl) return;
+    fpsAcc += 1 / Math.max(dt, 1e-4); fpsN++;
+    if (fpsN >= 30) {
+      fpsShown = fpsAcc / fpsN;
+      fpsAcc = 0; fpsN = 0;
+      const info = renderer.info;
+      techEl.textContent =
+        'FPS ' + fpsShown.toFixed(0) +
+        ' · calls ' + info.render.calls +
+        ' · tris ' + (info.render.triangles / 1000).toFixed(0) + 'k' +
+        ' · geo ' + info.memory.geometries +
+        ' · tex ' + info.memory.textures;
+    }
+  }
+
   /* ================= LOOP ================= */
   const clock = new THREE.Clock();
   const camPos = new THREE.Vector3(), camLook = new THREE.Vector3();
-  const introLook = new THREE.Vector3(0, 9, 0);
+  const introLook = new THREE.Vector3(0, 8, 0);
 
   function animate() {
     requestAnimationFrame(animate);
@@ -1621,7 +1312,6 @@
       sampleIntroPos(p, camPos);
       camLook.copy(introLook).lerp(finalLook, p);
     } else if (tl.open && !tl.playing) {
-      /* timeline scrub preview: camera follows the playhead */
       sampleIntroPos(tl.head, camPos);
       camLook.copy(introLook).lerp(finalLook, tl.head);
     } else {
@@ -1640,98 +1330,43 @@
     camera.position.copy(camPos);
     camera.lookAt(camLook);
 
-    /* ---- birth sequence, driven by the timeline progress ----
-       seqP follows the flight (or the scrub head when editing) */
-    seqP = !state.introDone
-      ? THREE.MathUtils.clamp(state.intro, 0, 1)
-      : (tl.open ? tl.head : 1);
-    const matW    = THREE.MathUtils.smoothstep(seqP, 0.22, 0.9);   // world fade-in
-    const holoK   = 1 - THREE.MathUtils.smoothstep(seqP, 0.55, 0.9); // network/core fade-out
-    const wireDrw = THREE.MathUtils.smoothstep(seqP, 0.02, 0.6);   // blueprint draws top→down
-    const wireOut = 1 - THREE.MathUtils.smoothstep(seqP, 0.8, 0.98); // lines dissolve at the end
+    updateBlocks(t, dt);
 
-    updateHover();
-    updatePyramid(t);
-    updateOverlay();
+    /* lights follow the reveal + core energy */
+    const matC = THREE.MathUtils.smoothstep(state.reveal, 0.12, 0.7);
+    coreLight.intensity = 60 * CFG.coreEnergy * matC;
+    coreLight2.intensity = 30 * CFG.coreEnergy * matC;
+    apexLight.intensity = 20 * CFG.coreEnergy * matC * (0.85 + Math.sin(t * 1.3) * 0.15);
 
-    /* blueprint pyramid */
-    holoGroup.visible = wireOut > 0.01;
-    if (holoGroup.visible) {
-      holoWire.geometry.setDrawRange(0, Math.floor(holoWireTotal * wireDrw));
-      holoWire.material.opacity = (0.5 + Math.sin(t * 2.3) * 0.08) * wireOut;
-      holoWireGlow.material.opacity = 0.16 * wireOut;
-      /* AI network + core: alive early, dissolving as matter wins */
-      holoNetLines.geometry.setDrawRange(0, Math.floor(holoNetTotal * Math.min(1, wireDrw * 1.2)));
-      holoNetLines.material.opacity = 0.3 * holoK;
-      holoNetDots.material.opacity = 0.9 * holoK;
-      const pulse = 1 + Math.sin(t * 1.1) * 0.10;
-      holoCore.scale.setScalar(pulse * (0.15 + holoK * 0.85));
-      holoCoreGlow.material.opacity = 0.85 * holoK;
-      holoCoreGlow.scale.set(15 * pulse, 15 * pulse, 1);
-      holoLight.intensity = (2.0 + Math.sin(t * 1.1) * 0.8) * holoK;
-      holoGroup.rotation.y = Math.sin(t * 0.05) * 0.12;
-      updateHoloLabels(t, holoK > 0.05);
-    } else {
-      updateHoloLabels(t, false);
+    skyMat.uniforms.uTime.value = t;
+    dustMat.uniforms.uTime.value = t;
+
+    if (blockMat.userData.shader) {
+      blockMat.userData.shader.uniforms.uTime.value = t;
+      blockMat.userData.shader.uniforms.uCoreEnergy.value = CFG.coreEnergy;
+      blockMat.userData.shader.uniforms.uBlockGlow.value = CFG.blockGlow * matC;
     }
+    renderer.toneMappingExposure = CFG.exposure;
+    bloomPass.strength = CFG.bloom;
 
-    /* floor blueprint: geometric white lines, in early, out at the end */
-    floorWire.material.opacity = 0.24
-      * THREE.MathUtils.smoothstep(seqP, 0.0, 0.2)
-      * (1 - THREE.MathUtils.smoothstep(seqP, 0.78, 0.97));
+    /* volumetric fog pass inputs */
+    volPass.uniforms.uTime.value = t;
+    volPass.uniforms.uCamPos.value.copy(camera.position);
+    volPass.uniforms.uInvProj.value.copy(camera.projectionMatrix).invert();
+    volPass.uniforms.uInvView.value.copy(camera.matrixWorld);
+    volPass.uniforms.uCoreEnergy.value = CFG.coreEnergy * matC;
+    volPass.uniforms.uDensity.value = CFG.fogDensity * (reduced ? 0.6 : 1) * THREE.MathUtils.smoothstep(state.reveal, 0.05, 0.6);
 
-    /* physical world materializing in sync:
-       the textured floor + rocks REVEAL as an expanding circle from
-       the pyramid, matched to the top-down block front */
-    revealUniforms.uRevealR.value = 430 * THREE.MathUtils.smoothstep(seqP, 0.08, 0.9);
-    const matC = THREE.MathUtils.smoothstep(seqP, 0.18, 0.55); // inner core wakes with the blocks
-    starField.material.opacity = 0.85 * matW;
-    cap.scale.setScalar(0.001 + THREE.MathUtils.smoothstep(seqP, 0.04, 0.16)); // apex first
-    core.scale.setScalar(0.001 + matC * 0.999);
-    coreHalo.scale.setScalar(0.001 + matC * 0.999);
-    volUniforms.uDensity.value = CFG.fogDensity * (reduced ? 0.6 : 1) * matW;
-
-    /* white energy — intense, clean sci-fi light escaping the seams
-       (wakes up with the block materialization: matC) */
-    const E = (fracture.energy + waveActivity * 0.9) * CFG.coreEnergy;
-    coreLight.intensity = 3.0 * E * matC;
-    coreLightLow.intensity = 1.0 * E * matC;
-    coreHalo.material.opacity = (0.20 + 0.14 * (E - 1)) * matC;
-    cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
-    volUniforms.uEnergy.value = E * 1.15 * matC;
-
-    /* wind: sand sheets scrolling + streaks racing across the floor
-       (fades in with the materialization) */
-    const windMul = reduced ? 0.25 : 1;
-    for (let i = 0; i < sandSheets.length; i++) {
-      const sh = sandSheets[i];
-      sh.userData.tex.offset.x -= sh.userData.speed * dt * windMul;
-      sh.material.opacity = sh.userData.baseO * matW;
-    }
-    for (let i = 0; i < streaks.length; i++) {
-      const sp = streaks[i], u = sp.userData;
-      sp.position.x += u.vx * dt * windMul;
-      sp.position.z += Math.sin(t * 0.7 + u.sway) * dt * 1.6 * windMul;
-      if (sp.position.x > WX.max) {
-        sp.position.x = WX.min;
-        sp.position.z = WZ.min + Math.random() * (WZ.max - WZ.min);
-        sp.position.y = 0.3 + Math.random() * 1.7 + Math.max(0, duneH(sp.position.x, sp.position.z));
-      }
-      sp.material.opacity = u.baseO * (0.6 + 0.4 * Math.sin(t * 2.2 + u.sway * 3)) * matW;
-    }
+    /* render scene into rtScene so the fog pass can read depth */
+    renderer.setRenderTarget(rtScene);
+    renderer.render(scene, camera);
+    renderer.setRenderTarget(null);
+    volPass.uniforms.tDiffuse.value = rtScene.texture;
+    composer.render();
 
     drawWave(t);
     updateTimelineUI();
-
-    volUniforms.uTime.value = t;
-    volUniforms.uCamPos.value.copy(camera.position);
-    volUniforms.uInvProj.value.copy(camera.projectionMatrix).invert();
-    volUniforms.uInvView.value.copy(camera.matrixWorld);
-
-    renderer.setRenderTarget(rt);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
-    renderer.render(postScene, postCam);
+    updateTech(dt);
   }
   animate();
 
@@ -1739,7 +1374,11 @@
     camera.aspect = innerWidth / innerHeight;
     camera.updateProjectionMatrix();
     renderer.setSize(innerWidth, innerHeight);
-    rt.setSize(innerWidth * DPR, innerHeight * DPR);
+    composer.setSize(innerWidth, innerHeight);
+    const w = Math.floor(innerWidth * renderer.getPixelRatio());
+    const h = Math.floor(innerHeight * renderer.getPixelRatio());
+    rtScene.setSize(w, h);
+    volPass.uniforms.uRes.value.set(w, h);
   });
 })();
 </script>
