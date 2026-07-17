@@ -177,9 +177,20 @@
   <p class="text-[.52rem] tracking-[.12em] text-dust leading-[1.7] mt-2">Arrastra los ◆ para mover keyframes en el tiempo · clic en un ◆ para editar su posición X/Y/Z · arrastra el borde dorado para alargar/achicar la duración · clic/arrastra en el clip para hacer scrub con la cámara.</p>
 </section>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-<script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
 (() => {
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const isMobile = innerWidth < 700;
@@ -391,21 +402,64 @@
     return mounds + Math.max(0, mounds) * 0.4 + hills + mountains;
   };
   
-  /* ---- real PBR textures ---- */
+  /* ---- texture manager (igloo-style modes, KTX2-capable) ---- */
+  const ktx2Loader = new KTX2Loader()
+    .setTranscoderPath('./vendor/three/libs/basis/')
+    .detectSupport(renderer);
+  const dracoLoader = new DRACOLoader()
+    .setDecoderPath('./vendor/three/libs/draco/');
   const texLoader = new THREE.TextureLoader();
-  function loadTex(url, srgb = false, repeat = 1) {
-    const t = texLoader.load(url);
-    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
-    t.wrapS = t.wrapT = THREE.RepeatWrapping;
-    t.repeat.set(repeat, repeat);
-    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    return t;
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+  /**
+   * loadTex(url, mode)
+   * mode tokens (igloo-style, space separated):
+   *   "srgb"       -> texture.encoding = sRGBEncoding (r128 API)
+   *   "repeat"     -> RepeatWrapping both axes (default: ClampToEdge)
+   *   "repeat=N"   -> also set repeat N x N (uv tiling factor)
+   *   "nearest"    -> NearestFilter, no mipmaps (data/pixel-art)
+   *   "mirror"     -> MirroredRepeatWrapping
+   *   "nomipmaps"  -> no mipmap generation
+   * .ktx2 files route through KTX2Loader (GPU-native compression);
+   * everything else through TextureLoader.
+   */
+  function loadTex(url, mode = "") {
+    const has = (tok) => mode.split(/\s+/).some(t => t === tok || t.startsWith(tok + "="));
+    const opt = (tok, dflt) => {
+      const t = mode.split(/\s+/).find(t => t.startsWith(tok + "="));
+      return t ? t.split("=")[1] : dflt;
+    };
+    const isKtx2 = /\.ktx2$/i.test(url);
+    const tex = isKtx2 ? ktx2Loader.load(url) : texLoader.load(url);
+
+    if (has("srgb")) tex.encoding = THREE.sRGBEncoding;   // r128 API (was silently broken before)
+    if (has("repeat")) {
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      const r = parseFloat(opt("repeat", "1"));
+      if (r !== 1) tex.repeat.set(r, r);
+    } else if (has("mirror")) {
+      tex.wrapS = tex.wrapT = THREE.MirroredRepeatWrapping;
+    }
+    if (has("nearest")) {
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+    }
+    if (has("nomipmaps")) {
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+    }
+    if (!has("nearest")) tex.anisotropy = maxAniso;
+    return tex;
   }
-  const stoneColorTex = loadTex('assets/tex/stone_color.jpg', true, 0.8);
-  const stoneNormalTex = loadTex('assets/tex/stone_normal.jpg', false, 0.8);
-  const stoneRoughTex = loadTex('assets/tex/stone_rough.jpg', false, 0.8);
-  const sandColorTexPBR = loadTex('assets/tex/sand_color.jpg', true, 20);
-  const sandNormalTexPBR = loadTex('assets/tex/sand_normal.jpg', false, 20);
+
+  // debug handle for QA
+  window.__pyraTex = { ktx2Loader, dracoLoader, loadTex };
+  const stoneColorTex = loadTex('assets/tex-ktx2/stone_color.ktx2', 'srgb repeat=0.8');
+  const stoneNormalTex = loadTex('assets/tex-ktx2/stone_normal.ktx2', 'repeat=0.8');
+  const stoneRoughTex = loadTex('assets/tex-ktx2/stone_rough.ktx2', 'repeat=0.8');
+  const sandColorTexPBR = loadTex('assets/tex-ktx2/sand_color.ktx2', 'srgb repeat=20');
+  const sandNormalTexPBR = loadTex('assets/tex-ktx2/sand_normal.ktx2', 'repeat=20');
 
   const groundGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
   groundGeo.rotateX(-Math.PI / 2);
@@ -662,7 +716,7 @@
     grad.addColorStop(0.3, 'rgba(255,225,190,0.3)');
     grad.addColorStop(1, 'rgba(255,200,160,0)');
     g.fillStyle = grad; g.fillRect(0,0,128,128);
-    const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+    const tex = new THREE.CanvasTexture(c); tex.encoding = THREE.sRGBEncoding;
     return tex;
   })();
   const tetraGlow = new THREE.Sprite(new THREE.SpriteMaterial({
