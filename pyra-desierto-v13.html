@@ -204,16 +204,16 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
      CONFIG — edited live by the UI panel
   ============================================================ */
   const CFG = {
-    cam:  { x: -6, y: 7.0, z: 46 },
-    look: { x: 4, y: 5.5, z: 0 },
+    cam:  { x: 0, y: 3.0, z: 32 },
+    look: { x: 0, y: 9.0, z: 0 },
     introDuration: 9,
-    fov: 33,
+    fov: 28,
     sway: 1,
     fogDensity: 0.22,
     coreEnergy: 0.9,
     breathSep: 1.1,
     hoverSep: 1.5,
-    exposure: 0.66,
+    exposure: 0.48,
     bloom: 0.30,
     blockGlow: 1.0,
     keyframes: [
@@ -273,7 +273,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
 
   /* ================= LIGHTS ================= */
   // moonlight key — cool, dim, long shadows
-  const moon = new THREE.DirectionalLight(0x8ea4cf, 0.22);
+  const moon = new THREE.DirectionalLight(0x8898c8, 0.015);
   moon.position.set(-34, 42, 18);
   moon.castShadow = true;
   moon.shadow.mapSize.set(2048, 2048);
@@ -283,7 +283,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
   moon.shadow.bias = -0.0004;
   moon.shadow.normalBias = 0.03;
   scene.add(moon);
-  scene.add(new THREE.HemisphereLight(0x1a2338, 0x070503, 0.16));
+  scene.add(new THREE.HemisphereLight(0x050810, 0x010101, 0.02));
 
   // warm core light — the heart of the pyramid
   const coreLight = new THREE.PointLight(0xffa04a, 0, 0, 2);
@@ -295,6 +295,46 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
   const apexLight = new THREE.PointLight(0xfff3dd, 0, 0, 2);
   apexLight.position.set(0, 15, 0);
   scene.add(apexLight);
+
+const TIERS = 14, TIER_H = 0.95, TOP_S = 1.0;
+
+/* ---------- floating glowing prism (the apex beacon) ---------- */
+const prismGeo = new THREE.CylinderGeometry(0.01, 1.0, 2.2, 3, 1, false);
+const prismMat = new THREE.MeshStandardMaterial({
+  color: 0xfff8ee,
+  emissive: 0xfff3e0,
+  emissiveIntensity: 4.0,
+  roughness: 0.1,
+  metalness: 0.0,
+  transparent: true,
+  opacity: 0.98
+});
+const prism = new THREE.Mesh(prismGeo, prismMat);
+prism.position.set(0, TIERS * TIER_H + 3.2, 0);
+scene.add(prism);
+/* soft glow sprite behind the prism */
+const prismGlowTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64,64,0,64,64,64);
+  grad.addColorStop(0, 'rgba(255,240,220,0.9)');
+  grad.addColorStop(0.3, 'rgba(255,220,180,0.35)');
+  grad.addColorStop(1, 'rgba(255,200,150,0)');
+  g.fillStyle = grad; g.fillRect(0,0,128,128);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+})();
+const prismGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: prismGlowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true
+}));
+prismGlow.scale.set(5, 5, 1);
+prismGlow.position.copy(prism.position);
+scene.add(prismGlow);
+/* prism light: bright warm point at the apex */
+const prismLight = new THREE.PointLight(0xfff0dd, 0, 40, 2);
+prismLight.position.copy(prism.position);
+scene.add(prismLight);
+
 
   /* ================= TERRAIN ================= */
   // fbm noise (CPU) for dune displacement
@@ -351,7 +391,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
     terGeo.computeVertexNormals();
   }
   const terMat = new THREE.MeshStandardMaterial({
-    color: 0x36322c,
+    color: 0x030303,
     map: TEX.sandColor,
     normalMap: TEX.sandNrm,
     normalScale: new THREE.Vector2(0.85, 0.85),
@@ -368,14 +408,13 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
   /* ============================================================
      PYRAMID — stepped monolith, backlit alabaster blocks
   ============================================================ */
-  const TIERS = 9, TIER_H = 1.35, TOP_S = 2.0;
-  const BLOCK_GAP = 0.42;
+  const BLOCK_GAP = 0.15;
   const corePos = new THREE.Vector3(0, 7, 0);
   const blocks = [];
   const apexSeed = Math.random() * 10;
 
   for (let t = 0; t < TIERS; t++) {
-    const s = THREE.MathUtils.lerp(15, TOP_S + 0.5, t / (TIERS - 1));
+    const s = THREE.MathUtils.lerp(11, TOP_S + 0.2, t / (TIERS - 1));
     const count = t < 3 ? 4 : t < 6 ? 3 : t < 8 ? 2 : 1;
     const cw = s / count;
     const y = t * TIER_H + TIER_H / 2 - 0.4;
@@ -402,8 +441,8 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
   }
   // apex cap
   blocks.push({
-    bx: 0, by: TIERS * TIER_H + 0.55 - 0.4, bz: 0,
-    sx: TOP_S + 0.5, sy: 1.1, sz: TOP_S + 0.5,
+    bx: 0, by: TIERS * TIER_H - 0.4, bz: 0,
+    sx: TOP_S + 0.3, sy: 0.8, sz: TOP_S + 0.3,
     ry: 0, tier: TIERS, edge: 1, sxn: 0, szn: 0, seed: 0.5, apex: true
   });
 
@@ -497,7 +536,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
           // warm inner light — alabaster lit from the core
           float coreI = uCoreEnergy * uBlockGlow * smoothstep(9.5, 2.2, distance(vWorldPos, uCorePos));
           coreI *= 0.75 + 0.5 * vSeed;
-          totalEmissiveRadiance += vec3(1.0, 0.52, 0.20) * coreI * 1.1;
+          totalEmissiveRadiance += vec3(1.0, 0.46, 0.14) * coreI * 2.2;
           // apex block: lantern-bright warm skin
           float apexBoost = uBlockGlow * (1.0 - step(0.001, abs(vGlow))) * step(12.0, vWorldPos.y);
           // fracture glow — seams between blocks catch the light
@@ -569,8 +608,8 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
       float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1,311.7))) * 43758.5453); }
       void main() {
         float h = clamp(vDir.y, 0.0, 1.0);
-        vec3 zen = vec3(0.002, 0.003, 0.008);
-        vec3 hor = vec3(0.005, 0.006, 0.011);
+        vec3 zen = vec3(0.0);
+        vec3 hor = vec3(0.0);
         vec3 col = mix(hor, zen, pow(h, 0.55));
         vec2 sp = vDir.xz / max(vDir.y + 0.18, 0.02) * 34.0;
         vec2 id = floor(sp);
@@ -581,7 +620,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
         float star = smoothstep(0.055, 0.0, d) * step(0.982, rn);
         float tw = 0.5 + 0.5 * sin(uTime * (0.6 + rn * 2.4) + rn * 40.0);
         col += vec3(0.85, 0.88, 1.0) * star * tw * smoothstep(0.02, 0.24, vDir.y) * 0.85;
-        col += vec3(0.006, 0.004, 0.003) * pow(1.0 - h, 3.0);
+        
         gl_FragColor = vec4(col, 1.0);
       }`
   });
@@ -750,8 +789,8 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
       uCorePos: { value: corePos },
       uCoreEnergy: { value: CFG.coreEnergy },
       uApexPos: { value: new THREE.Vector3(0, 15, 0) },
-      uColLow: { value: new THREE.Color(0x0a0d16) },
-      uColHigh: { value: new THREE.Color(0x3a2e26) },
+      uColLow: { value: new THREE.Color(0x050608) },
+      uColHigh: { value: new THREE.Color(0x2a1e14) },
       uRes: { value: size.clone() }
     },
     vertexShader: `
@@ -795,7 +834,7 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
         // diagonal two-tone fog (igloo recipe, adapted to desert night)
         vec2 suv = gl_FragCoord.xy / uRes;
         float grad = pow(clamp((suv.x + suv.y) * 0.5, 0.0, 1.0), 2.0);
-        vec3 fogCol = mix(uColLow, uColHigh, grad * 0.45) * 0.38;
+        vec3 fogCol = mix(uColLow, uColHigh, grad * 0.45) * 0.12;
         // distance + height falloff
         float distF = 1.0 - exp(-rayLen * rayLen * uDensity * 0.00006);
         float hF = exp(-max(wp.y, 0.0) * 0.42);
@@ -1337,6 +1376,14 @@ import { SMAAPass } from 'three/addons/postprocessing/SMAAPass.js';
     coreLight.intensity = 60 * CFG.coreEnergy * matC;
     coreLight2.intensity = 30 * CFG.coreEnergy * matC;
     apexLight.intensity = 20 * CFG.coreEnergy * matC * (0.85 + Math.sin(t * 1.3) * 0.15);
+    /* prism: gentle float + pulse */
+    prism.position.y = TIERS * TIER_H + 3.2 + Math.sin(t * 0.8) * 0.35;
+    prism.rotation.y = t * 0.15;
+    prismMat.emissiveIntensity = 5.0 * matC * (0.9 + Math.sin(t * 1.1) * 0.1);
+    prismGlow.position.copy(prism.position);
+    prismGlow.material.opacity = 0.7 * matC;
+    prismLight.position.copy(prism.position);
+    prismLight.intensity = 35 * CFG.coreEnergy * matC;
 
     skyMat.uniforms.uTime.value = t;
     dustMat.uniforms.uTime.value = t;
