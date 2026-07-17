@@ -390,6 +390,24 @@
     );
     return mounds + Math.max(0, mounds) * 0.4 + hills + mountains;
   };
+    /* ---- real PBR stone textures (ambientCG Rock061) ---- */
+  const texLoader = new THREE.TextureLoader();
+  function loadTex(url, srgb = false, repeat = 1) {
+    const t = texLoader.load(url);
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(repeat, repeat);
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    return t;
+  }
+  const stoneColorTex = loadTex('assets/tex/stone_color.jpg', true, 0.8);
+  const stoneNormalTex = loadTex('assets/tex/stone_normal.jpg', false, 0.8);
+  const stoneRoughTex = loadTex('assets/tex/stone_rough.jpg', false, 0.8);
+  const stoneAOTex = loadTex('assets/tex/stone_ao.jpg', false, 0.8);
+  const sandColorTex = loadTex('assets/tex/sand_color.jpg', true, 24);
+  const sandNormalTex = loadTex('assets/tex/sand_normal.jpg', false, 24);
+  const sandRoughTex = loadTex('assets/tex/sand_rough.jpg', false, 24);
+
   const groundGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
   groundGeo.rotateX(-Math.PI / 2);
   {
@@ -397,10 +415,25 @@
     for (let i = 0; i < p.count; i++) p.setY(i, duneH(p.getX(i), p.getZ(i)));
     groundGeo.computeVertexNormals();
   }
-  const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
-    map: sandTex, bumpMap: sandTex, bumpScale: 0.35,
-    color: 0xc4bbaa, roughness: 1, metalness: 0
-  }));
+  const groundMat = new THREE.MeshStandardMaterial({
+    map: sandColorTex, normalMap: sandNormalTex,
+    roughnessMap: sandRoughTex,
+    color: 0x8a7d6a, roughness: 1.0, metalness: 0,
+    normalScale: new THREE.Vector2(1.2, 1.2)
+  });
+  /* warm radial tint from pyramid base */
+  groundMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uCorePos = { value: new THREE.Vector3(0, 0, 0) };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform vec3 uCorePos;')
+      .replace('#include <color_fragment>', `#include <color_fragment>
+        float coreDist = length(vWorldPosition.xz - uCorePos.xz);
+        float warmPool = exp(-coreDist * 0.06);
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.3, 0.9, 0.6), warmPool * 0.7);
+      `);
+    groundMat.userData.shader = sh;
+  };
+  const ground = new THREE.Mesh(groundGeo, groundMat);
   injectReveal(ground.material);                       // materializes as a circle
   ground.receiveShadow = true;
   scene.add(ground);
@@ -504,12 +537,32 @@
       }
     }
   }
+  
+
   const BS_XZ = CELL_XZ * 0.998, BS_Y = CELL_Y * 0.998;
 
   const blockMat = new THREE.MeshStandardMaterial({
-    map: stoneTex, bumpMap: stoneTex, bumpScale: 0.12,
-    color: 0xffffff, roughness: 0.92, metalness: 0.03
+    map: stoneColorTex, normalMap: stoneNormalTex,
+    roughnessMap: stoneRoughTex, aoMap: stoneAOTex, aoMapIntensity: 1.1,
+    color: 0xf0e6d4, roughness: 1.0, metalness: 0.02,
+    normalScale: new THREE.Vector2(1.4, 1.4)
   });
+  /* warm emissive from interior light leaking through seams */
+  blockMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uCoreE = { value: 1.0 };
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nuniform float uCoreE;')
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        /* warm glow from interior, stronger toward block center */
+        vec2 cUv = vUv - 0.5;
+        float seam = smoothstep(0.5, 0.35, max(abs(cUv.x), abs(cUv.y)));
+        float centerGlow = smoothstep(0.5, 0.0, length(cUv));
+        totalEmissiveRadiance += vec3(1.0, 0.55, 0.22) * centerGlow * 0.35 * uCoreE;
+        /* darker seams for carved-block read */
+        totalEmissiveRadiance *= 1.0 - seam * 0.4;
+      `);
+    blockMat.userData.shader = sh;
+  };
   const pyramidMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), blockMat, blocks.length);
   pyramidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   pyramidMesh.castShadow = true;
@@ -580,6 +633,30 @@
   const tetraLight = new THREE.PointLight(0xffe0bb, 25, 35, 2);
   tetraLight.position.copy(tetra.position);
   scene.add(tetraLight);
+
+  
+  /* ---- volumetric light shaft from tetrahedron to apex ---- */
+  const shaftGeo = new THREE.ConeGeometry(1.8, PYR_H + 3, 32, 1, true);
+  const shaftMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `varying vec2 vUv; varying vec3 vPos;
+      void main(){ vUv = uv; vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `varying vec2 vUv; varying vec3 vPos; uniform float uTime;
+      void main(){
+        float h = vUv.y;
+        float shaft = pow(h, 2.5) * 0.25;
+        shaft *= 0.7 + 0.3 * sin(uTime * 0.5 + h * 8.0);
+        float edge = smoothstep(0.0, 0.3, vUv.x) * smoothstep(1.0, 0.7, vUv.x);
+        vec3 col = vec3(1.0, 0.75, 0.45) * shaft * edge;
+        gl_FragColor = vec4(col, shaft * edge);
+      }`
+  });
+  const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+  shaft.position.y = (PYR_H + 3) / 2 + 1.2;
+  shaft.rotation.x = Math.PI;
+  scene.add(shaft);
 
   const proxy = new THREE.Mesh(
     new THREE.ConeGeometry(PYR_BASE * 1.45, PYR_H * 1.15, 4, 1),
@@ -1225,6 +1302,9 @@
         }
         vec3 col = sceneCol * T + L;
         col *= 1.0 - dot(q, q) * 0.65;
+        /* subtle film grain */
+        float grain = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+        col += (grain - 0.5) * 0.028;
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -1735,6 +1815,7 @@
     tetraGlow.position.copy(tetra.position);
     tetraGlow.material.opacity = 0.6;
     tetraLight.position.copy(tetra.position);
+    shaft.material.uniforms.uTime.value = t;
     volUniforms.uEnergy.value = E * 1.15 * matC;
 
     /* wind: sand sheets scrolling + streaks racing across the floor
