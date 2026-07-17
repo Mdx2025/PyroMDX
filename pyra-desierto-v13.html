@@ -531,20 +531,93 @@
     normalScale: new THREE.Vector2(1.2, 1.2),
     emissive: 0x30200a, emissiveIntensity: 0.35
   });
+  /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
+  blockMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = { value: 0 };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec4 aVar;
+        varying vec4 vVar;
+        varying vec3 vWPos;
+        varying vec3 vWNormal;
+        varying vec2 vVarUv;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vVar = aVar;
+        {
+          float _c = cos(aVar.z), _s = sin(aVar.z);
+          vec2 _uvC = uv - 0.5;
+          vec2 _r = vec2(_c * _uvC.x - _s * _uvC.y, _s * _uvC.x + _c * _uvC.y) + 0.5;
+          vVarUv = _r * (0.85 + aVar.w * 0.35) + aVar.xy;
+        }
+        vec4 _wp = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          _wp = instanceMatrix * _wp;
+        #endif
+        vWPos = (modelMatrix * _wp).xyz;
+        vWNormal = normalize(mat3(modelMatrix) * objectNormal);`)
+      /* rotate + offset the UVs per instance BEFORE the map sample */
+
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec4 vVar;
+        varying vec3 vWPos;
+        varying vec3 vWNormal;
+        varying vec2 vVarUv;
+        float _hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float _noise(vec2 p){
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(_hash(i), _hash(i + vec2(1,0)), f.x),
+                     mix(_hash(i + vec2(0,1)), _hash(i + vec2(1,1)), f.x), f.y);
+        }`)
+      /* roughness breakup: per-pixel noise varies roughness */
+      .replace('#include <map_fragment>', `
+        vec4 sampledDiffuseColor = texture2D( map, vVarUv );
+        diffuseColor *= sampledDiffuseColor;
+      `)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        {
+          float _rn = _noise(vWPos.xz * 2.1 + vVar.xy * 40.0);
+          float _rn2 = _noise(vWPos.xy * 3.3 + vVar.z * 50.0);
+          roughnessFactor = clamp(roughnessFactor * (0.78 + _rn * 0.5) + (_rn2 - 0.5) * 0.18, 0.35, 1.0);
+        }`)
+      /* detail normal + micro AO + per-block tone variation */
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          /* high-freq detail normal from world-space noise */
+          float _dn = _noise(vWPos.xz * 9.0) * 0.5 + _noise(vWPos.xz * 27.0) * 0.5;
+          vec3 _detailN = normalize(vec3(dFdx(_dn) * 8.0, dFdy(_dn) * 8.0, 1.0));
+          normal = normalize(normal + _detailN * 0.35);
+        }`)
+      .replace('#include <aomap_fragment>', `#include <aomap_fragment>
+        {
+          /* contact-ish darkening in recesses via noise */
+          float _ao = _noise(vWPos.xz * 4.0 + vVar.xy * 60.0);
+          reflectedLight.indirectDiffuse *= 0.72 + _ao * 0.5;
+        }`);
+    blockMat.userData.shader = sh;
+  };
   const pyramidMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), blockMat, blocks.length);
   pyramidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   pyramidMesh.castShadow = true;
   pyramidMesh.receiveShadow = true;
   scene.add(pyramidMesh);
-  /* subtle per-block tint variation for a natural quarry look */
+  /* per-block tint + per-instance texture variation attribute */
   {
     const c = new THREE.Color();
+    const varArr = new Float32Array(blocks.length * 4);
     for (let i = 0; i < blocks.length; i++) {
       const v = 0.86 + Math.random() * 0.2;
       c.setRGB(v, v * (0.97 + Math.random() * 0.05), v * (0.92 + Math.random() * 0.06));
       pyramidMesh.setColorAt(i, c);
+      /* uv offset (2), rotation (1), scale/rough variation (1) */
+      varArr[i * 4 + 0] = Math.random();
+      varArr[i * 4 + 1] = Math.random();
+      varArr[i * 4 + 2] = (Math.random() - 0.5) * 0.9;   /* subtle rotation */
+      varArr[i * 4 + 3] = Math.random();
     }
     pyramidMesh.instanceColor.needsUpdate = true;
+    pyramidMesh.geometry.setAttribute('aVar', new THREE.InstancedBufferAttribute(varArr, 4));
   }
   const dummy = new THREE.Object3D();
 
