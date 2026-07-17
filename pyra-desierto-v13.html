@@ -460,6 +460,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const stoneRoughTex = loadTex('assets/tex-ktx2/stone_rough.ktx2', 'repeat=0.8');
   const sandColorTexPBR = loadTex('assets/tex-ktx2/sand_color.ktx2', 'srgb repeat=20');
   const sandNormalTexPBR = loadTex('assets/tex-ktx2/sand_normal.ktx2', 'repeat=20');
+  const terrainLmTex = loadTex('assets/tex-ktx2/pyra_terrain_4k.ktx2', 'srgb');
 
   const groundGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
   groundGeo.rotateX(-Math.PI / 2);
@@ -474,6 +475,28 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     normalScale: new THREE.Vector2(1.0, 1.0)
   }));
   injectReveal(ground.material);                       // materializes as a circle
+  {
+    const prevOBC = ground.material.onBeforeCompile;
+    ground.material.onBeforeCompile = shader => {
+      prevOBC(shader);  // chain reveal first
+      shader.uniforms.uTerrainLm = { value: terrainLmTex };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          varying vec2 vTerrainLmUv;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vTerrainLmUv = uv;  // planar UV: x/760+0.5, z/760+0.5`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          uniform sampler2D uTerrainLm;
+          varying vec2 vTerrainLmUv;`)
+        .replace('#include <map_fragment>', `#include <map_fragment>
+          {
+            vec3 _tlm = texture2D(uTerrainLm, vTerrainLmUv).rgb;
+            // warm tint: blend baked sand color + directional shading
+            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.35, 0.62);
+          }`);
+    };
+  }
   ground.receiveShadow = true;
   scene.add(ground);
 
