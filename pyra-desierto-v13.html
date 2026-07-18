@@ -248,7 +248,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
   scene.add(new THREE.AmbientLight(0x3a2f24, 1.1));
   scene.add(new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55));
-  const keyLight = new THREE.DirectionalLight(0xe8d4b0, 0.85);
+  const keyLight = new THREE.DirectionalLight(0xf0dcb8, 1.15);
   keyLight.position.set(-38, 46, 34);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
@@ -455,9 +455,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
   // debug handle for QA
   window.__pyraTex = { ktx2Loader, dracoLoader, loadTex };
-  const stoneColorTex = loadTex('assets/tex-ktx2/stone_color.ktx2', 'srgb repeat=0.8');
-  const stoneNormalTex = loadTex('assets/tex-ktx2/stone_normal.ktx2', 'repeat=0.8');
-  const stoneRoughTex = loadTex('assets/tex-ktx2/stone_rough.ktx2', 'repeat=0.8');
+  const stoneColorTex = loadTex('assets/tex-ktx2/stone2_color.ktx2', 'srgb repeat=0.8');
+  const stoneNormalTex = loadTex('assets/tex-ktx2/stone2_normal.ktx2', 'repeat=0.8');
+  const stoneRoughTex = loadTex('assets/tex-ktx2/stone2_rough.ktx2', 'repeat=0.8');
+  const stoneAoTex = loadTex('assets/tex-ktx2/stone2_ao.ktx2', 'repeat=0.8');
   const sandColorTexPBR = loadTex('assets/tex-ktx2/sand_color.ktx2', 'srgb repeat=20');
   const sandNormalTexPBR = loadTex('assets/tex-ktx2/sand_normal.ktx2', 'repeat=20');
   const terrainLmTex = loadTex('assets/tex-ktx2/pyra_terrain_4k.ktx2', 'srgb');
@@ -595,6 +596,8 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           : new THREE.Vector3(0, 1, 0);
         blocks.push({
           home: new THREE.Vector3(x, y, z),
+          jx: x, jz: z, jy: y,                                       // deformed rest pos (set below)
+          layer: j, ia: a, ib: b, count,
           dir: outward,                                              // wave: radial escape
           lift: outward.clone().multiplyScalar(0.35).add(UP).normalize(), // hover: mostly upward
           amp: 0.75 + pyraRnd() * 0.5,
@@ -602,11 +605,69 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           floatSpeed: 0.9 + pyraRnd() * 0.8,
           spinAxis: new THREE.Vector3(pyraRnd() - .5, 1, pyraRnd() - .5).normalize(),
           isStatic: j === 0,
+          eroded: false, shrinkF: 1,
           inf: 0,
           lastDisp: 0
         });
       }
     }
+  }
+
+  /* ---- weathering pass (Phase 4): per-layer row offset, per-block jitter, erosion.
+     Separate PRNG stream so existing animation randoms stay stable.
+     MUST stay in exact sync with tools/export-pyramid-glb.mjs ---- */
+  {
+    let _s2 = (PYRA_SEED ^ 0x9E3779B9) | 0;
+    const rnd2 = () => {
+      _s2 |= 0; _s2 = (_s2 + 0x6D2B79F5) | 0;
+      let t = Math.imul(_s2 ^ (_s2 >>> 15), 1 | _s2);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    /* per-layer course offsets (masonry rows are never perfectly stacked) */
+    const layerDX = [], layerDZ = [];
+    for (let j = 0; j < LAYERS; j++) {
+      layerDX.push((rnd2() - 0.5) * 0.5);
+      layerDZ.push((rnd2() - 0.5) * 0.5);
+    }
+    const _e = new THREE.Euler(), _jq = new THREE.Quaternion();
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const B = blocks[bi];
+      const j = B.layer, count = B.count, a = B.ia, b = B.ib;
+      /* row offset */
+      B.jx = B.home.x + layerDX[j];
+      B.jz = B.home.z + layerDZ[j];
+      B.jy = B.home.y;
+      /* positional jitter */
+      B.jx += (rnd2() - 0.5) * 0.18;
+      B.jz += (rnd2() - 0.5) * 0.18;
+      B.jy += (rnd2() - 0.5) * 0.10;
+      /* orientation jitter: yaw dominant + slight tilt */
+      const yaw = (rnd2() - 0.5) * 0.08;
+      const tiltX = (rnd2() - 0.5) * 0.05;
+      const tiltZ = (rnd2() - 0.5) * 0.05;
+      _e.set(tiltX, yaw, tiltZ, 'YXZ');
+      B.jquat = new THREE.Quaternion().setFromEuler(_e);
+      /* scale jitter */
+      const su = 0.93 + rnd2() * 0.14;
+      const sy = 0.95 + rnd2() * 0.10;
+      B.jsx = su; B.jsy = sy; B.jsz = su;
+      /* seed for shader displacement + tone */
+      B.seed = rnd2();
+      /* erosion: corners and exposed edges of upper layers */
+      const isCorner = (a === 0 || a === count - 1) && (b === 0 || b === count - 1);
+      const isEdge = !isCorner && (a === 0 || a === count - 1 || b === 0 || b === count - 1);
+      const r = rnd2();
+      if (j >= 1 && isCorner) {
+        if (r < 0.30) B.eroded = true;
+        else if (r < 0.60) B.shrinkF = 0.50 + rnd2() * 0.22;
+      } else if (j >= 2 && isEdge) {
+        if (r < 0.08) B.eroded = true;
+        else if (r < 0.20) B.shrinkF = 0.62 + rnd2() * 0.20;
+      }
+    }
+    /* remove eroded blocks (exporter mirrors this exact filter) */
+    for (let bi = blocks.length - 1; bi >= 0; bi--) if (blocks[bi].eroded) blocks.splice(bi, 1);
   }
   const BS_XZ = CELL_XZ * 0.998, BS_Y = CELL_Y * 0.998;
 
@@ -621,17 +682,23 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     map: stoneColorTex, normalMap: stoneNormalTex,
     roughnessMap: stoneRoughTex,
     color: 0xf5e8d0, roughness: 0.95, metalness: 0.02,
-    normalScale: new THREE.Vector2(1.2, 1.2),
+    normalScale: new THREE.Vector2(1.6, 1.6),
     emissive: 0x30200a, emissiveIntensity: 0.12   /* reduced: lightmap provides base warmth */
   });
   /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
   blockMat.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = { value: 0 };
     sh.uniforms.uLightmap = { value: pyraLightmapTex };
+    sh.uniforms.uSandTex = { value: sandColorTexPBR };
+    sh.uniforms.uAoTex = { value: stoneAoTex };
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec4 aVar;
         attribute vec2 aUvTile;
+        attribute float aSeed;
+        attribute vec2 aFaceUv;
+        varying float vSeed;
+        varying vec2 vFaceUv;
         varying vec4 vVar;
         varying vec3 vWPos;
         varying vec3 vWNormal;
@@ -639,11 +706,24 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         varying vec2 vLmUv;`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
         vVar = aVar;
+        vSeed = aSeed;
+        vFaceUv = aFaceUv;
         {
           float _c = cos(aVar.z), _s = sin(aVar.z);
           vec2 _uvC = uv - 0.5;
           vec2 _r = vec2(_c * _uvC.x - _s * _uvC.y, _s * _uvC.x + _c * _uvC.y) + 0.5;
           vVarUv = _r * (0.85 + aVar.w * 0.35) + aVar.xy;
+        }
+        /* erosion displacement: radial from block center, position-keyed (continuous
+           across face corners). MUST match exporter's bake geometry. */
+        {
+          vec3 _lp = position;
+          vec3 _dir = normalize(_lp + vec3(0.0001));
+          vec3 _np = _lp * 2.6 + vec3(aSeed * 17.31, aSeed * 9.17, aSeed * 13.77);
+          float _h1 = fract(sin(dot(_np, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          float _h2 = fract(sin(dot(_np + 0.5, vec3(269.5, 183.3, 246.1))) * 28001.8384);
+          float _n = (_h1 + _h2) * 0.5;
+          transformed += _dir * ((_n - 0.42) * 0.075);
         }
         vec4 _wp = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
@@ -663,7 +743,11 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         varying vec3 vWNormal;
         varying vec2 vVarUv;
         varying vec2 vLmUv;
+        varying float vSeed;
+        varying vec2 vFaceUv;
         uniform sampler2D uLightmap;
+        uniform sampler2D uSandTex;
+        uniform sampler2D uAoTex;
         float _hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float _noise(vec2 p){
           vec2 i = floor(p), f = fract(p);
@@ -675,11 +759,32 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       .replace('#include <map_fragment>', `
         vec4 sampledDiffuseColor = texture2D( map, vVarUv );
         diffuseColor *= sampledDiffuseColor;
+        /* scanned AO map modulates albedo */
+        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, 0.55);
         /* Phase 2: baked lightmap — warm sandstone bake w/ directional shading + AO */
         {
           vec3 _lm = texture2D( uLightmap, vec2(vLmUv.x, 1.0 - vLmUv.y) ).rgb;
-          /* lightmap: baked sandstone color + directional shading, blended over albedo */
-          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * 1.6, 0.72);
+          /* per-block macro tone variation (wide, seed-keyed) */
+          float _tone = 0.80 + 0.40 * fract(vSeed * 7.13);
+          _lm *= _tone;
+          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 2.1, 0.60);
+        }
+        /* masonry joints: dark gap at face border + slight edge-wear lightening */
+        {
+          float _bd = min(min(vFaceUv.x, 1.0 - vFaceUv.x), min(vFaceUv.y, 1.0 - vFaceUv.y));
+          float _gap = 1.0 - smoothstep(0.0, 0.055, _bd);
+          float _wear = smoothstep(0.16, 0.045, _bd) * (1.0 - _gap);
+          diffuseColor.rgb *= 1.0 - _gap * 0.30;
+          diffuseColor.rgb += _wear * 0.045 * vec3(1.0, 0.94, 0.82);
+        }
+        /* sand accumulation on upward-facing surfaces */
+        {
+          vec3 _wN = normalize(vWNormal);
+          float _up = smoothstep(0.35, 0.85, _wN.y);
+          float _sn = _noise(vWPos.xz * 1.7) * 0.6 + _noise(vWPos.xz * 6.3) * 0.4;
+          float _sandAmt = _up * smoothstep(0.34, 0.66, _sn) * 0.60;
+          vec3 _sand = texture2D( uSandTex, vWPos.xz * 0.11 ).rgb;
+          diffuseColor.rgb = mix(diffuseColor.rgb, _sand * 0.68, _sandAmt);
         }
       `)
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
@@ -708,6 +813,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
      Same face definitions as tools/export-pyramid-glb.mjs (positions, normals, face-local UVs),
      with each face's UV remapped into its 3x2 tile-local sub-rect. */
   const pyramidGeo = (() => {
+    /* subdivided box: SUB x SUB grid per face (interior verts allow erosion displacement).
+       Corner positions identical to the exporter's FACES definition. */
+    const SUB = 5; /* 5x5 verts per face -> 150 verts/block */
     const hx = 0.5, hy = 0.5, hz = 0.5;
     const FACES = [
       { n: [1,0,0],  c: [[hx,-hy,-hz],[hx,hy,-hz],[hx,hy,hz],[hx,-hy,hz]] },
@@ -721,23 +829,40 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       [0/3, 0/2], [1/3, 0/2], [2/3, 0/2],
       [0/3, 1/2], [1/3, 1/2], [2/3, 1/2]
     ];
-    const FACE_UV = [[0,0],[1,0],[1,1],[0,1]];
-    const pos = [], nrm = [], uvs = [], idx = [];
+    const pos = [], nrm = [], uvs = [], fuv = [], idx = [];
     for (let f = 0; f < 6; f++) {
       const face = FACES[f];
       const [ru, rv] = FACE_RECT[f];
-      const base = f * 4;
-      for (let v = 0; v < 4; v++) {
-        pos.push(...face.c[v]);
-        nrm.push(...face.n);
-        uvs.push(ru + FACE_UV[v][0] / 3, rv + FACE_UV[v][1] / 2);
+      const base = f * SUB * SUB;
+      for (let gy = 0; gy < SUB; gy++) {
+        for (let gx = 0; gx < SUB; gx++) {
+          const u = gx / (SUB - 1), v = gy / (SUB - 1);
+          /* bilinear interpolation of the 4 corners (quad order: 00,10,11,01) */
+          const c0 = face.c[0], c1 = face.c[1], c2 = face.c[2], c3 = face.c[3];
+          for (let k = 0; k < 3; k++) {
+            pos.push(
+              c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) +
+              c2[k] * u * v + c3[k] * (1 - u) * v
+            );
+          }
+          nrm.push(...face.n);
+          uvs.push(ru + u / 3, rv + v / 2);
+          fuv.push(u, v);
+        }
       }
-      idx.push(base, base+1, base+2, base, base+2, base+3);
+      for (let gy = 0; gy < SUB - 1; gy++) {
+        for (let gx = 0; gx < SUB - 1; gx++) {
+          const i0 = base + gy * SUB + gx, i1 = i0 + 1;
+          const i2 = base + (gy + 1) * SUB + gx, i3 = i2 + 1;
+          idx.push(i0, i1, i2, i1, i3, i2);
+        }
+      }
     }
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
     g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setAttribute('aFaceUv', new THREE.Float32BufferAttribute(fuv, 2));
     g.setIndex(idx);
     return g;
   })();
@@ -762,6 +887,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     }
     pyramidMesh.instanceColor.needsUpdate = true;
     pyramidMesh.geometry.setAttribute('aVar', new THREE.InstancedBufferAttribute(varArr, 4));
+    /* per-block weathering seed (displacement + tone) */
+    const seedArr = new Float32Array(blocks.length);
+    for (let i = 0; i < blocks.length; i++) seedArr[i] = blocks[i].seed;
+    pyramidMesh.geometry.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seedArr, 1));
     /* lightmap atlas tile offsets (col,row)/13 per instance */
     const tileArr = new Float32Array(blocks.length * 2);
     for (let i = 0; i < blocks.length; i++) {
@@ -1036,18 +1165,17 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       let m = THREE.MathUtils.clamp((B.home.y - revealY) / 2.6, 0, 1);
       m = m * m * (3 - 2 * m);
       if (m < 0.003) {
-        dummy.position.copy(B.home);
+        dummy.position.set(B.jx, B.jy, B.jz);
         dummy.scale.setScalar(0.0001);
-        dummy.quaternion.set(0, 0, 0, 1);
+        dummy.quaternion.copy(B.jquat);
         dummy.updateMatrix();
         pyramidMesh.setMatrixAt(i, dummy.matrix);
         continue;
       }
       if (B.isStatic) {
-        dummy.position.copy(B.home);
-        dummy.position.y += (1 - m) * 1.4;
-        dummy.quaternion.set(0, 0, 0, 1);
-        dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
+        dummy.position.set(B.jx, B.jy + (1 - m) * 1.4, B.jz);
+        dummy.quaternion.copy(B.jquat);
+        dummy.scale.set(BS_XZ * m * B.jsx * B.shrinkF, BS_Y * m * B.jsy * B.shrinkF, BS_XZ * m * B.jsz * B.shrinkF);
         dummy.updateMatrix();
         pyramidMesh.setMatrixAt(i, dummy.matrix);
         continue;
@@ -1064,7 +1192,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       act += wave;
 
       /* wave: slides outward along its radial dir */
-      dummy.position.copy(B.home).addScaledVector(B.dir, wave * CFG.breathSep);
+      dummy.position.set(B.jx, B.jy, B.jz).addScaledVector(B.dir, wave * CFG.breathSep);
       dummy.position.y += (1 - m) * 1.4;               // soft drop-in while materializing
       /* hover: the block levitates — mostly upward lift + gentle bob,
          as if suspended mid-assembly over the structure */
@@ -1073,13 +1201,13 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         dummy.position.addScaledVector(B.lift, si * CFG.hoverSep);
         dummy.position.y += bob;
         _q.setFromAxisAngle(B.spinAxis, si * (0.12 + Math.sin(tw * 0.6 + B.floatPhase) * 0.06));
-        dummy.quaternion.copy(_q);
+        dummy.quaternion.copy(B.jquat).multiply(_q);
       } else {
-        dummy.quaternion.set(0, 0, 0, 1);
+        dummy.quaternion.copy(B.jquat);
       }
       B.lastDisp = wave * CFG.breathSep + si * CFG.hoverSep;
 
-      dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
+      dummy.scale.set(BS_XZ * m * B.jsx * B.shrinkF, BS_Y * m * B.jsy * B.shrinkF, BS_XZ * m * B.jsz * B.shrinkF);
       dummy.updateMatrix();
       pyramidMesh.setMatrixAt(i, dummy.matrix);
     }

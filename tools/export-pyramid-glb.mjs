@@ -48,23 +48,65 @@ for (let j = 0; j < LAYERS; j++) {
       if (interior) continue;
       const x = -half + CELL_XZ / 2 + a * CELL_XZ;
       const z = -half + CELL_XZ / 2 + b * CELL_XZ;
-      // consume the same 6 randoms as runtime (amp, floatPhase, floatSpeed, spinX, spinZ + spin normalize)
+      // consume the same 5 randoms as runtime (amp, floatPhase, floatSpeed, spinX, spinZ)
       pyraRnd(); pyraRnd(); pyraRnd(); pyraRnd(); pyraRnd();
-      // note: runtime also consumes 5 more in tint/aVar loop AFTER all blocks — not here
-      blocks.push({ x, y, z });
+      // note: runtime also consumes 7 more in tint/aVar loop AFTER all blocks — not here
+      blocks.push({ x, y, z, j, a, b, count });
     }
   }
 }
-console.log('blocks:', blocks.length);
+
+/* ---- weathering pass (must mirror runtime EXACTLY) ---- */
+{
+  let _s2 = (PYRA_SEED ^ 0x9E3779B9) | 0;
+  const rnd2 = () => {
+    _s2 |= 0; _s2 = (_s2 + 0x6D2B79F5) | 0;
+    let t = Math.imul(_s2 ^ (_s2 >>> 15), 1 | _s2);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const layerDX = [], layerDZ = [];
+  for (let j = 0; j < LAYERS; j++) {
+    layerDX.push((rnd2() - 0.5) * 0.5);
+    layerDZ.push((rnd2() - 0.5) * 0.5);
+  }
+  for (let bi = 0; bi < blocks.length; bi++) {
+    const B = blocks[bi];
+    const j = B.j, count = B.count, a = B.a, b = B.b;
+    B.jx = B.x + layerDX[j] + (rnd2() - 0.5) * 0.18;
+    B.jz = B.z + layerDZ[j] + (rnd2() - 0.5) * 0.18;
+    B.jy = B.y + (rnd2() - 0.5) * 0.10;
+    B.yaw = (rnd2() - 0.5) * 0.08;
+    B.tiltX = (rnd2() - 0.5) * 0.05;
+    B.tiltZ = (rnd2() - 0.5) * 0.05;
+    const su = 0.93 + rnd2() * 0.14;
+    const sy = 0.95 + rnd2() * 0.10;
+    B.jsx = su; B.jsy = sy; B.jsz = su;
+    B.seed = rnd2();
+    const isCorner = (a === 0 || a === count - 1) && (b === 0 || b === count - 1);
+    const isEdge = !isCorner && (a === 0 || a === count - 1 || b === 0 || b === count - 1);
+    const r = rnd2();
+    B.eroded = false; B.shrinkF = 1;
+    if (j >= 1 && isCorner) {
+      if (r < 0.30) B.eroded = true;
+      else if (r < 0.60) B.shrinkF = 0.50 + rnd2() * 0.22;
+    } else if (j >= 2 && isEdge) {
+      if (r < 0.08) B.eroded = true;
+      else if (r < 0.20) B.shrinkF = 0.62 + rnd2() * 0.20;
+    }
+  }
+  for (let bi = blocks.length - 1; bi >= 0; bi--) if (blocks[bi].eroded) blocks.splice(bi, 1);
+}
+console.log('blocks (after erosion):', blocks.length);
 if (blocks.length > ATLAS_COLS * ATLAS_ROWS) throw new Error('atlas too small');
 
-/* ---- box template: 24 verts (4 per face), 36 indices, face order +x,-x,+y,-y,+z,-z ---- */
+/* ---- subdivided box template: SUB x SUB per face, matching runtime geometry ---- */
+const SUB = 5;
 const FACE_RECTS = [
   [0 / 3, 0 / 2], [1 / 3, 0 / 2], [2 / 3, 0 / 2],   // +x -x +y
   [0 / 3, 1 / 2], [1 / 3, 1 / 2], [2 / 3, 1 / 2],   // -y +z -z
 ];
 const hx = 0.5, hy = 0.5, hz = 0.5;
-// face definitions: 4 corner positions + normal, uv quad (0..1 within face rect)
 const FACES = [
   { n: [1, 0, 0],  c: [[hx, -hy, -hz], [hx, hy, -hz], [hx, hy, hz], [hx, -hy, hz]] },
   { n: [-1, 0, 0], c: [[-hx, -hy, hz], [-hx, hy, hz], [-hx, hy, -hz], [-hx, -hy, -hz]] },
@@ -73,40 +115,85 @@ const FACES = [
   { n: [0, 0, 1],  c: [[-hx, -hy, hz], [hx, -hy, hz], [hx, hy, hz], [-hx, hy, hz]] },
   { n: [0, 0, -1], c: [[hx, -hy, -hz], [-hx, -hy, -hz], [-hx, hy, -hz], [hx, hy, -hz]] },
 ];
-const FACE_UV = [[0, 0], [1, 0], [1, 1], [0, 1]];
 
-/* ---- build merged buffers: all blocks, each with its own 24 verts (unshared) ---- */
+/* erosion displacement — same formula as runtime vertex shader */
+function displace(lx, ly, lz, seed) {
+  const len = Math.hypot(lx, ly, lz) || 1;
+  const dx = lx / len, dy = ly / len, dz = lz / len;
+  const px = lx * 2.6 + seed * 17.31, py = ly * 2.6 + seed * 9.17, pz = lz * 2.6 + seed * 13.77;
+  const h1 = fract(Math.sin(px * 127.1 + py * 311.7 + pz * 74.7) * 43758.5453);
+  const h2 = fract(Math.sin((px + 0.5) * 269.5 + (py + 0.5) * 183.3 + (pz + 0.5) * 246.1) * 28001.8384);
+  const n = (h1 + h2) * 0.5;
+  const d = (n - 0.42) * 0.075;
+  return [dx * d, dy * d, dz * d];
+}
+function fract(x) { return x - Math.floor(x); }
+
+/* quaternion (YXZ euler) rotate — matches THREE.Quaternion.setFromEuler('YXZ') applied to vector */
+function rotYXZ(vx, vy, vz, tx, yaw, tz) {
+  // Y (yaw)
+  const cy = Math.cos(yaw), sy = Math.sin(yaw);
+  let x = vx * cy + vz * sy, y = vy, z = -vx * sy + vz * cy;
+  // X (tiltX)
+  const cx = Math.cos(tx), sx = Math.sin(tx);
+  let y2 = y * cx - z * sx, z2 = y * sx + z * cx, x2 = x;
+  // Z (tiltZ)
+  const cz = Math.cos(tz), sz = Math.sin(tz);
+  return [x2 * cz - y2 * sz, x2 * sz + y2 * cz, z2];
+}
+
+const VPB = 6 * SUB * SUB;             /* verts per block */
+const IPB = 6 * (SUB - 1) * (SUB - 1) * 6; /* indices per block */
 const NB = blocks.length;
-const posArr = new Float32Array(NB * 24 * 3);
-const nrmArr = new Float32Array(NB * 24 * 3);
-const uvArr  = new Float32Array(NB * 24 * 2);
-const idxArr = new Uint32Array(NB * 36);
+const posArr = new Float32Array(NB * VPB * 3);
+const nrmArr = new Float32Array(NB * VPB * 3);
+const uvArr  = new Float32Array(NB * VPB * 2);
+const idxArr = new Uint32Array(NB * IPB);
 
 for (let i = 0; i < NB; i++) {
   const b = blocks[i];
   const col = i % ATLAS_COLS, row = Math.floor(i / ATLAS_COLS);
   const tu0 = col / ATLAS_COLS, tv0 = row / ATLAS_ROWS;
+  const sx = BS_XZ * b.jsx * b.shrinkF, sy2 = BS_Y * b.jsy * b.shrinkF, sz = BS_XZ * b.jsz * b.shrinkF;
+  let vo = 0;
   for (let f = 0; f < 6; f++) {
     const face = FACES[f];
     const [ru, rv] = FACE_RECTS[f];
-    for (let v = 0; v < 4; v++) {
-      const vi = i * 24 + f * 4 + v;
-      // position: unit box scaled to block dims, translated to home
-      posArr[vi * 3 + 0] = b.x + face.c[v][0] * BS_XZ;
-      posArr[vi * 3 + 1] = b.y + face.c[v][1] * BS_Y;
-      posArr[vi * 3 + 2] = b.z + face.c[v][2] * BS_XZ;
-      nrmArr[vi * 3 + 0] = face.n[0];
-      nrmArr[vi * 3 + 1] = face.n[1];
-      nrmArr[vi * 3 + 2] = face.n[2];
-      // uv: face-local (0..1) -> tile rect -> tile origin
-      const fu = FACE_UV[v][0], fv = FACE_UV[v][1];
-      uvArr[vi * 2 + 0] = tu0 + (ru + fu / 3) / ATLAS_COLS;
-      uvArr[vi * 2 + 1] = tv0 + (rv + fv / 2) / ATLAS_ROWS;
+    const faceBase = i * VPB + f * SUB * SUB;
+    for (let gy = 0; gy < SUB; gy++) {
+      for (let gx = 0; gx < SUB; gx++) {
+        const u = gx / (SUB - 1), v = gy / (SUB - 1);
+        const c0 = face.c[0], c1 = face.c[1], c2 = face.c[2], c3 = face.c[3];
+        /* local unit-box position (bilinear) */
+        let lx = 0, ly = 0, lz = 0;
+        for (let k = 0; k < 3; k++) {
+          const val = c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) + c2[k] * u * v + c3[k] * (1 - u) * v;
+          if (k === 0) lx = val; else if (k === 1) ly = val; else lz = val;
+        }
+        /* erosion displacement in unit space */
+        const [ddx, ddy, ddz] = displace(lx, ly, lz, b.seed);
+        /* scale + rotate + translate */
+        const wx = (lx + ddx) * sx, wy = (ly + ddy) * sy2, wz = (lz + ddz) * sz;
+        const [rx, ry, rz] = rotYXZ(wx, wy, wz, b.tiltX, b.yaw, b.tiltZ);
+        const vi = faceBase + gy * SUB + gx;
+        posArr[vi * 3 + 0] = b.jx + rx;
+        posArr[vi * 3 + 1] = b.jy + ry;
+        posArr[vi * 3 + 2] = b.jz + rz;
+        const [nx, ny, nz] = rotYXZ(face.n[0], face.n[1], face.n[2], b.tiltX, b.yaw, b.tiltZ);
+        nrmArr[vi * 3 + 0] = nx; nrmArr[vi * 3 + 1] = ny; nrmArr[vi * 3 + 2] = nz;
+        uvArr[vi * 2 + 0] = tu0 + (ru + u / 3) / ATLAS_COLS;
+        uvArr[vi * 2 + 1] = tv0 + (rv + v / 2) / ATLAS_ROWS;
+      }
     }
-    const base = i * 24 + f * 4;
-    const ii = (i * 36 + f * 6);
-    idxArr[ii + 0] = base + 0; idxArr[ii + 1] = base + 1; idxArr[ii + 2] = base + 2;
-    idxArr[ii + 3] = base + 0; idxArr[ii + 4] = base + 2; idxArr[ii + 5] = base + 3;
+    for (let gy = 0; gy < SUB - 1; gy++) {
+      for (let gx = 0; gx < SUB - 1; gx++) {
+        const i0 = faceBase + gy * SUB + gx, i1 = i0 + 1;
+        const i2 = faceBase + (gy + 1) * SUB + gx, i3 = i2 + 1;
+        const ii = i * IPB + f * (SUB - 1) * (SUB - 1) * 6 + (gy * (SUB - 1) + gx) * 6;
+        idxArr[ii + 0] = i0; idxArr[ii + 1] = i1; idxArr[ii + 2] = i2;
+        idxArr[ii + 3] = i1; idxArr[ii + 4] = i3; idxArr[ii + 5] = i2;
+      }
+    }
   }
 }
 
@@ -154,10 +241,10 @@ const gltf = {
     { buffer: 0, byteOffset: bvIdx.offset, byteLength: bvIdx.length, target: 34963 },
   ],
   accessors: [
-    { bufferView: 0, componentType: 5126, count: NB * 24, type: 'VEC3', min: mn, max: mx },
-    { bufferView: 1, componentType: 5126, count: NB * 24, type: 'VEC3' },
-    { bufferView: 2, componentType: 5126, count: NB * 24, type: 'VEC2' },
-    { bufferView: 3, componentType: 5125, count: NB * 36, type: 'SCALAR' },
+    { bufferView: 0, componentType: 5126, count: NB * VPB, type: 'VEC3', min: mn, max: mx },
+    { bufferView: 1, componentType: 5126, count: NB * VPB, type: 'VEC3' },
+    { bufferView: 2, componentType: 5126, count: NB * VPB, type: 'VEC2' },
+    { bufferView: 3, componentType: 5125, count: NB * IPB, type: 'SCALAR' },
   ],
   buffers: [{ byteLength: binLen }]
 };
