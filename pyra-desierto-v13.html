@@ -683,7 +683,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     roughnessMap: stoneRoughTex,
     color: 0xf5e8d0, roughness: 0.95, metalness: 0.02,
     normalScale: new THREE.Vector2(1.6, 1.6),
-    emissive: 0x30200a, emissiveIntensity: 0.12   /* reduced: lightmap provides base warmth */
+    emissive: 0x1a1008, emissiveIntensity: 0.06   /* reduced: lightmap provides base warmth */
   });
   /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
   blockMat.onBeforeCompile = (sh) => {
@@ -767,7 +767,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           /* per-block macro tone variation (wide, seed-keyed) */
           float _tone = 0.80 + 0.40 * fract(vSeed * 7.13);
           _lm *= _tone;
-          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 2.1, 0.60);
+          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 1.45, 0.45);
         }
         /* masonry joints: dark gap at face border + slight edge-wear lightening */
         {
@@ -2126,7 +2126,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
     tetra.position.y = PYR_H + 2.5 + Math.sin(t * 0.7) * 0.28;
     tetra.rotation.y = t * 0.12;
-    tetraMat.emissiveIntensity = 3.0 * (0.9 + Math.sin(t * 1.0) * 0.1);
+    tetraMat.emissiveIntensity = 2.2 * (0.9 + Math.sin(t * 1.0) * 0.1);
     tetraGlow.position.copy(tetra.position);
     tetraLight.position.copy(tetra.position);
     shaft.material.uniforms.uTime.value = t;
