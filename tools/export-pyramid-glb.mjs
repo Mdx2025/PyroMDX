@@ -67,20 +67,20 @@ for (let j = 0; j < LAYERS; j++) {
   };
   const layerDX = [], layerDZ = [];
   for (let j = 0; j < LAYERS; j++) {
-    layerDX.push((rnd2() - 0.5) * 0.5);
-    layerDZ.push((rnd2() - 0.5) * 0.5);
+    layerDX.push((rnd2() - 0.5) * 0.22);
+    layerDZ.push((rnd2() - 0.5) * 0.22);
   }
   for (let bi = 0; bi < blocks.length; bi++) {
     const B = blocks[bi];
     const j = B.j, count = B.count, a = B.a, b = B.b;
-    B.jx = B.x + layerDX[j] + (rnd2() - 0.5) * 0.18;
-    B.jz = B.z + layerDZ[j] + (rnd2() - 0.5) * 0.18;
-    B.jy = B.y + (rnd2() - 0.5) * 0.10;
-    B.yaw = (rnd2() - 0.5) * 0.08;
-    B.tiltX = (rnd2() - 0.5) * 0.05;
-    B.tiltZ = (rnd2() - 0.5) * 0.05;
-    const su = 0.93 + rnd2() * 0.14;
-    const sy = 0.95 + rnd2() * 0.10;
+    B.jx = B.x + layerDX[j] + (rnd2() - 0.5) * 0.08;
+    B.jz = B.z + layerDZ[j] + (rnd2() - 0.5) * 0.08;
+    B.jy = B.y + (rnd2() - 0.5) * 0.05;
+    B.yaw = (rnd2() - 0.5) * 0.045;
+    B.tiltX = (rnd2() - 0.5) * 0.03;
+    B.tiltZ = (rnd2() - 0.5) * 0.03;
+    const su = 0.965 + rnd2() * 0.05;
+    const sy = 0.97 + rnd2() * 0.05;
     B.jsx = su; B.jsy = sy; B.jsz = su;
     B.seed = rnd2();
     const isCorner = (a === 0 || a === count - 1) && (b === 0 || b === count - 1);
@@ -88,11 +88,11 @@ for (let j = 0; j < LAYERS; j++) {
     const r = rnd2();
     B.eroded = false; B.shrinkF = 1;
     if (j >= 1 && isCorner) {
-      if (r < 0.30) B.eroded = true;
-      else if (r < 0.60) B.shrinkF = 0.50 + rnd2() * 0.22;
+      if (r < 0.10) B.eroded = true;
+      else if (r < 0.35) B.shrinkF = 0.84 + rnd2() * 0.10;
     } else if (j >= 2 && isEdge) {
-      if (r < 0.08) B.eroded = true;
-      else if (r < 0.20) B.shrinkF = 0.62 + rnd2() * 0.20;
+      if (r < 0.03) B.eroded = true;
+      else if (r < 0.12) B.shrinkF = 0.88 + rnd2() * 0.08;
     }
   }
   for (let bi = blocks.length - 1; bi >= 0; bi--) if (blocks[bi].eroded) blocks.splice(bi, 1);
@@ -101,7 +101,8 @@ console.log('blocks (after erosion):', blocks.length);
 if (blocks.length > ATLAS_COLS * ATLAS_ROWS) throw new Error('atlas too small');
 
 /* ---- subdivided box template: SUB x SUB per face, matching runtime geometry ---- */
-const SUB = 5;
+const SUB = 9;      /* Phase A: matches runtime (9x9 verts/face) */
+const BEVEL = 0.11; /* Phase A: unit-space rounded-box bevel radius */
 const FACE_RECTS = [
   [0 / 3, 0 / 2], [1 / 3, 0 / 2], [2 / 3, 0 / 2],   // +x -x +y
   [0 / 3, 1 / 2], [1 / 3, 1 / 2], [2 / 3, 1 / 2],   // -y +z -z
@@ -124,7 +125,7 @@ function displace(lx, ly, lz, seed) {
   const h1 = fract(Math.sin(px * 127.1 + py * 311.7 + pz * 74.7) * 43758.5453);
   const h2 = fract(Math.sin((px + 0.5) * 269.5 + (py + 0.5) * 183.3 + (pz + 0.5) * 246.1) * 28001.8384);
   const n = (h1 + h2) * 0.5;
-  const d = (n - 0.42) * 0.075;
+  const d = (n - 0.45) * 0.04;
   return [dx * d, dy * d, dz * d];
 }
 function fract(x) { return x - Math.floor(x); }
@@ -162,7 +163,10 @@ for (let i = 0; i < NB; i++) {
     const faceBase = i * VPB + f * SUB * SUB;
     for (let gy = 0; gy < SUB; gy++) {
       for (let gx = 0; gx < SUB; gx++) {
-        const u = gx / (SUB - 1), v = gy / (SUB - 1);
+        const u0 = gx / (SUB - 1), v0 = gy / (SUB - 1);
+        /* edge-biased grid remap — matches runtime pyramidGeo */
+        const u = 0.5 + 0.5 * Math.sin(Math.PI * (u0 - 0.5));
+        const v = 0.5 + 0.5 * Math.sin(Math.PI * (v0 - 0.5));
         const c0 = face.c[0], c1 = face.c[1], c2 = face.c[2], c3 = face.c[3];
         /* local unit-box position (bilinear) */
         let lx = 0, ly = 0, lz = 0;
@@ -170,7 +174,19 @@ for (let i = 0; i < NB; i++) {
           const val = c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) + c2[k] * u * v + c3[k] * (1 - u) * v;
           if (k === 0) lx = val; else if (k === 1) ly = val; else lz = val;
         }
-        /* erosion displacement in unit space */
+        /* rounded-box projection — matches runtime pyramidGeo */
+        const inner = 0.5 - BEVEL;
+        const qx = Math.max(-inner, Math.min(inner, lx));
+        const qy = Math.max(-inner, Math.min(inner, ly));
+        const qz = Math.max(-inner, Math.min(inner, lz));
+        const bx = lx - qx, by = ly - qy, bz = lz - qz;
+        const bl = Math.hypot(bx, by, bz);
+        let lnx = face.n[0], lny = face.n[1], lnz = face.n[2];
+        if (bl > 1e-6) {
+          lx = qx + bx / bl * BEVEL; ly = qy + by / bl * BEVEL; lz = qz + bz / bl * BEVEL;
+          lnx = bx / bl; lny = by / bl; lnz = bz / bl;
+        }
+        /* erosion displacement in unit space (dir from rounded position, like shader) */
         const [ddx, ddy, ddz] = displace(lx, ly, lz, b.seed);
         /* scale + rotate + translate */
         const wx = (lx + ddx) * sx, wy = (ly + ddy) * sy2, wz = (lz + ddz) * sz;
@@ -179,7 +195,7 @@ for (let i = 0; i < NB; i++) {
         posArr[vi * 3 + 0] = b.jx + rx;
         posArr[vi * 3 + 1] = b.jy + ry;
         posArr[vi * 3 + 2] = b.jz + rz;
-        const [nx, ny, nz] = rotYXZ(face.n[0], face.n[1], face.n[2], b.tiltX, b.yaw, b.tiltZ);
+        const [nx, ny, nz] = rotYXZ(lnx, lny, lnz, b.tiltX, b.yaw, b.tiltZ);
         nrmArr[vi * 3 + 0] = nx; nrmArr[vi * 3 + 1] = ny; nrmArr[vi * 3 + 2] = nz;
         uvArr[vi * 2 + 0] = tu0 + (ru + u / 3) / ATLAS_COLS;
         uvArr[vi * 2 + 1] = tv0 + (rv + v / 2) / ATLAS_ROWS;

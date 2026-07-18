@@ -199,15 +199,15 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
      CONFIG — edited live by the UI panel
   ============================================================ */
   const CFG = {
-    cam:  { x: -11.5, y: 15, z: 43 },
-    look: { x: 0,  y: 9.5, z: 0 },
+    cam:  { x: -13, y: 11, z: 50 },
+    look: { x: 0,  y: 7.8, z: 0 },
     introDuration: 9,
-    fov: 55,
+    fov: 42,
     sway: 1,
     fogDensity: 0.3,
     coreEnergy: 0.3,
-    breathSep: 1.1,   // wave-ripple separation amplitude
-    hoverSep: 1.5,    // extra separation under the cursor
+    breathSep: 0.55,  // wave-ripple separation amplitude
+    hoverSep: 1.2,    // extra separation under the cursor
     /* intro cinematic = the birth sequence: starts straight above the
        pyramid and descends while everything materializes top-down.
        t = normalized time 0..1 · first/last are locked in time */
@@ -233,20 +233,35 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* ================= RENDERER / SCENE ================= */
   const canvas = document.getElementById('scene');
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  const NOFOG = new URLSearchParams(location.search).has('nofog');
+  const USE_JPG = new URLSearchParams(location.search).has('jpg'); /* ktx2 default (GPU-compressed); ?jpg falls back to the source jpgs for QA */
+  const TEX_VERSION = '20260718c'; /* bump when regenerating assets under assets/ */
+  /* QA still mode: ?still — skip intro, freeze time, flag readiness on window.__stillReady */
+  const STILL = new URLSearchParams(location.search).has('still');
+  let _texLoaded = false, _stillFrames = 0;
+  THREE.DefaultLoadingManager.onLoad = () => { _texLoaded = true; };
   const DPR = Math.min(devicePixelRatio, 1.5);
   renderer.setPixelRatio(DPR);
   renderer.setSize(innerWidth, innerHeight);
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  /* Phase B: filmic response everywhere (igloo-style ACES). Phase C: in the
+     default fog path the post shader applies ACES itself, so the scene must
+     reach the render target LINEAR — r128 applies renderer.toneMapping even
+     when rendering to a target, which double-tone-mapped the frame (washed
+     blacks: night still p5 was 39 vs 15 in the reference). NOFOG renders
+     straight to canvas and keeps the renderer-side ACES. */
+  renderer.toneMapping = NOFOG ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0806);
-  scene.fog = new THREE.FogExp2(0x0f0c08, 0.0028);
+  scene.fog = new THREE.FogExp2(0x121009, 0.0026);
 
   const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 900);
 
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
-  scene.add(new THREE.AmbientLight(0x3a2f24, 1.1));
+  scene.add(new THREE.AmbientLight(0x3a2f24, 1.0));
   scene.add(new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55));
   const keyLight = new THREE.DirectionalLight(0xf0dcb8, 1.15);
   keyLight.position.set(-38, 46, 34);
@@ -260,6 +275,43 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const moonLight = new THREE.DirectionalLight(0xb0a890, 0.22);
   moonLight.position.set(40, 60, 30);
   scene.add(moonLight);
+
+  /* Phase B: IBL — PMREM of a procedural warm-night sky (dark zenith, warm
+     horizon band, faint ground bounce) painted into an equirect canvas.
+     Gives blocks/sand the soft environmental fill + specular igloo gets from
+     its EXR env. (fromEquirectangular: fromScene produced black materials
+     under r128 + onBeforeCompile) */
+  if (!new URLSearchParams(location.search).has('noenv')) {
+    const W = 512, H = 256;
+    const cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext('2d');
+    const img = ctx.createImageData(W, H);
+    for (let y = 0; y < H; y++) {
+      const h = 1 - (y / (H - 1)) * 2;             /* +1 zenith .. -1 nadir */
+      let r, g, b;
+      if (h >= 0) {
+        const t = Math.exp(-h * 5.0);
+        r = 0.012 + (0.30 - 0.012) * t; g = 0.011 + (0.17 - 0.011) * t; b = 0.015 + (0.075 - 0.015) * t;
+      } else {
+        const t = Math.exp(h * 7.0);
+        r = 0.070 + (0.30 - 0.070) * t; g = 0.052 + (0.17 - 0.052) * t; b = 0.034 + (0.075 - 0.034) * t;
+      }
+      for (let x = 0; x < W; x++) {
+        const i = (y * W + x) * 4;
+        img.data[i] = Math.round(r * 255); img.data[i + 1] = Math.round(g * 255);
+        img.data[i + 2] = Math.round(b * 255); img.data[i + 3] = 255;
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    const envTex = new THREE.CanvasTexture(cv);
+    envTex.mapping = THREE.EquirectangularReflectionMapping;
+    envTex.encoding = THREE.sRGBEncoding;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromEquirectangular(envTex).texture;
+    pmrem.dispose();
+    envTex.dispose();
+  }
 
   /* ============================================================
      PROCEDURAL HI-RES TEXTURES (no external assets)
@@ -430,7 +482,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       return t ? t.split("=")[1] : dflt;
     };
     const isKtx2 = /\.ktx2$/i.test(url);
-    const tex = isKtx2 ? ktx2Loader.load(url) : texLoader.load(url);
+    /* cache-bust: static servers without Cache-Control let browsers keep
+       heuristically-cached stale textures after asset regeneration */
+    const bustedUrl = url + '?v=' + TEX_VERSION;
+    const tex = isKtx2 ? ktx2Loader.load(bustedUrl) : texLoader.load(bustedUrl);
 
     if (has("srgb")) tex.encoding = THREE.sRGBEncoding;   // r128 API (was silently broken before)
     if (has("repeat")) {
@@ -455,10 +510,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
   // debug handle for QA
   window.__pyraTex = { ktx2Loader, dracoLoader, loadTex };
-  const stoneColorTex = loadTex('assets/tex-ktx2/stone2_color.ktx2', 'srgb repeat=0.8');
-  const stoneNormalTex = loadTex('assets/tex-ktx2/stone2_normal.ktx2', 'repeat=0.8');
-  const stoneRoughTex = loadTex('assets/tex-ktx2/stone2_rough.ktx2', 'repeat=0.8');
-  const stoneAoTex = loadTex('assets/tex-ktx2/stone2_ao.ktx2', 'repeat=0.8');
+  const stoneColorTex = loadTex(USE_JPG ? 'assets/tex/stone2_color.jpg' : 'assets/tex-ktx2/stone2_color.ktx2', 'srgb repeat=0.8');
+  const stoneNormalTex = loadTex(USE_JPG ? 'assets/tex/stone2_normal.jpg' : 'assets/tex-ktx2/stone2_normal.ktx2', 'repeat=0.8');
+  const stoneRoughTex = loadTex(USE_JPG ? 'assets/tex/stone2_rough.jpg' : 'assets/tex-ktx2/stone2_rough.ktx2', 'repeat=0.8');
+  const stoneAoTex = loadTex(USE_JPG ? 'assets/tex/stone2_ao.jpg' : 'assets/tex-ktx2/stone2_ao.ktx2', 'repeat=0.8');
   const sandColorTexPBR = loadTex('assets/tex-ktx2/sand_color.ktx2', 'srgb repeat=20');
   const sandNormalTexPBR = loadTex('assets/tex-ktx2/sand_normal.ktx2', 'repeat=20');
   const terrainLmTex = loadTex('assets/tex-ktx2/pyra_terrain_4k.ktx2', 'srgb');
@@ -472,8 +527,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   }
   const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
     map: sandColorTexPBR, normalMap: sandNormalTexPBR,
-    color: 0xd4c0a0, roughness: 1.0, metalness: 0,
-    normalScale: new THREE.Vector2(1.0, 1.0)
+    color: 0xcabda6, roughness: 1.0, metalness: 0,
+    normalScale: new THREE.Vector2(1.0, 1.0),
+    envMapIntensity: 0.25  /* IBL: diffuse fill only — full env spec streaks on dune ripples */
   }));
   injectReveal(ground.material);                       // materializes as a circle
   {
@@ -492,9 +548,14 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           varying vec2 vTerrainLmUv;`)
         .replace('#include <map_fragment>', `#include <map_fragment>
           {
-            vec3 _tlm = texture2D(uTerrainLm, vTerrainLmUv).rgb;
-            // warm tint: blend baked sand color + directional shading
-            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.35, 0.62);
+            /* ktx2 uploads unflipped (flipY=false): flip V like the pyramid
+               lightmap sample — without it dune shadows land on the wrong
+               dunes and read as dirty stains */
+            vec3 _tlm = texture2D(uTerrainLm, vec2(vTerrainLmUv.x, 1.0 - vTerrainLmUv.y)).rgb;
+            // desaturate the baked lightmap toward luminance: keep shading, drop the orange cast
+            float _tlum = dot(_tlm, vec3(0.299, 0.587, 0.114));
+            _tlm = mix(vec3(_tlum), _tlm, 0.45);
+            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.25, 0.62);
           }`);
     };
   }
@@ -506,7 +567,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   {
     const ROCK_N = isMobile ? 90 : 200;
     const rockGeo = new THREE.DodecahedronGeometry(1, 0);
-    const rockMat = new THREE.MeshStandardMaterial({ color: 0x8d857a, roughness: 1, metalness: 0, flatShading: true });
+    const rockMat = new THREE.MeshStandardMaterial({ color: 0x6b655c, roughness: 1, metalness: 0, flatShading: true });
     injectReveal(rockMat);                              // rocks appear with the circle
     const rocks = new THREE.InstancedMesh(rockGeo, rockMat, ROCK_N);
     rocksMesh = rocks;
@@ -522,8 +583,8 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       rd.scale.set(s * (0.8 + Math.random() * 0.6), s * (0.5 + Math.random() * 0.5), s * (0.8 + Math.random() * 0.6));
       rd.updateMatrix();
       rocks.setMatrixAt(i, rd.matrix);
-      const v = 0.8 + Math.random() * 0.35;
-      rc.setRGB(0.55 * v, 0.52 * v, 0.48 * v);
+      const v = 0.55 + Math.random() * 0.30;
+      rc.setRGB(0.50 * v, 0.485 * v, 0.46 * v);
       rocks.setColorAt(i, rc);
     }
     rocks.instanceColor.needsUpdate = true;
@@ -624,11 +685,12 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     };
-    /* per-layer course offsets (masonry rows are never perfectly stacked) */
+    /* per-layer course offsets (masonry rows are never perfectly stacked)
+       Phase A: tightened — carved masonry, not broken ruin */
     const layerDX = [], layerDZ = [];
     for (let j = 0; j < LAYERS; j++) {
-      layerDX.push((rnd2() - 0.5) * 0.5);
-      layerDZ.push((rnd2() - 0.5) * 0.5);
+      layerDX.push((rnd2() - 0.5) * 0.22);
+      layerDZ.push((rnd2() - 0.5) * 0.22);
     }
     const _e = new THREE.Euler(), _jq = new THREE.Quaternion();
     for (let bi = 0; bi < blocks.length; bi++) {
@@ -639,31 +701,31 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       B.jz = B.home.z + layerDZ[j];
       B.jy = B.home.y;
       /* positional jitter */
-      B.jx += (rnd2() - 0.5) * 0.18;
-      B.jz += (rnd2() - 0.5) * 0.18;
-      B.jy += (rnd2() - 0.5) * 0.10;
+      B.jx += (rnd2() - 0.5) * 0.08;
+      B.jz += (rnd2() - 0.5) * 0.08;
+      B.jy += (rnd2() - 0.5) * 0.05;
       /* orientation jitter: yaw dominant + slight tilt */
-      const yaw = (rnd2() - 0.5) * 0.08;
-      const tiltX = (rnd2() - 0.5) * 0.05;
-      const tiltZ = (rnd2() - 0.5) * 0.05;
+      const yaw = (rnd2() - 0.5) * 0.045;
+      const tiltX = (rnd2() - 0.5) * 0.03;
+      const tiltZ = (rnd2() - 0.5) * 0.03;
       _e.set(tiltX, yaw, tiltZ, 'YXZ');
       B.jquat = new THREE.Quaternion().setFromEuler(_e);
       /* scale jitter */
-      const su = 0.93 + rnd2() * 0.14;
-      const sy = 0.95 + rnd2() * 0.10;
+      const su = 0.965 + rnd2() * 0.05;
+      const sy = 0.97 + rnd2() * 0.05;
       B.jsx = su; B.jsy = sy; B.jsz = su;
       /* seed for shader displacement + tone */
       B.seed = rnd2();
-      /* erosion: corners and exposed edges of upper layers */
+      /* erosion: chips on corners/edges of upper layers (subtle, not half-blocks) */
       const isCorner = (a === 0 || a === count - 1) && (b === 0 || b === count - 1);
       const isEdge = !isCorner && (a === 0 || a === count - 1 || b === 0 || b === count - 1);
       const r = rnd2();
       if (j >= 1 && isCorner) {
-        if (r < 0.30) B.eroded = true;
-        else if (r < 0.60) B.shrinkF = 0.50 + rnd2() * 0.22;
+        if (r < 0.10) B.eroded = true;
+        else if (r < 0.35) B.shrinkF = 0.84 + rnd2() * 0.10;
       } else if (j >= 2 && isEdge) {
-        if (r < 0.08) B.eroded = true;
-        else if (r < 0.20) B.shrinkF = 0.62 + rnd2() * 0.20;
+        if (r < 0.03) B.eroded = true;
+        else if (r < 0.12) B.shrinkF = 0.88 + rnd2() * 0.08;
       }
     }
     /* remove eroded blocks (exporter mirrors this exact filter) */
@@ -683,6 +745,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     roughnessMap: stoneRoughTex,
     color: 0xf5e8d0, roughness: 0.95, metalness: 0.02,
     normalScale: new THREE.Vector2(1.6, 1.6),
+    envMapIntensity: 0.6,
     emissive: 0x1a1008, emissiveIntensity: 0.06   /* reduced: lightmap provides base warmth */
   });
   /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
@@ -710,9 +773,15 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         vFaceUv = aFaceUv;
         {
           float _c = cos(aVar.z), _s = sin(aVar.z);
-          vec2 _uvC = uv - 0.5;
+          /* sample the photo from face-local UV (geometry uv is the lightmap
+             atlas layout); on ±x faces the exporter maps u=vertical, so swap
+             axes to keep the masonry courses horizontal on every side face */
+          vec2 _fu = abs(normal.x) > 0.5 ? aFaceUv.yx : aFaceUv;
+          vec2 _uvC = _fu - 0.5;
           vec2 _r = vec2(_c * _uvC.x - _s * _uvC.y, _s * _uvC.x + _c * _uvC.y) + 0.5;
-          vVarUv = _r * (0.85 + aVar.w * 0.35) + aVar.xy;
+          /* wide crop ~ one masonry course per face — full-window sampling
+             made every block display the entire wall pattern */
+          vVarUv = _r * vec2(0.5, 0.18) * (0.85 + aVar.w * 0.35) + aVar.xy;
         }
         /* erosion displacement: radial from block center, position-keyed (continuous
            across face corners). MUST match exporter's bake geometry. */
@@ -723,7 +792,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           float _h1 = fract(sin(dot(_np, vec3(127.1, 311.7, 74.7))) * 43758.5453);
           float _h2 = fract(sin(dot(_np + 0.5, vec3(269.5, 183.3, 246.1))) * 28001.8384);
           float _n = (_h1 + _h2) * 0.5;
-          transformed += _dir * ((_n - 0.42) * 0.075);
+          transformed += _dir * ((_n - 0.45) * 0.04);
         }
         vec4 _wp = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
@@ -754,18 +823,44 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           f = f * f * (3.0 - 2.0 * f);
           return mix(mix(_hash(i), _hash(i + vec2(1,0)), f.x),
                      mix(_hash(i + vec2(0,1)), _hash(i + vec2(1,1)), f.x), f.y);
+        }
+        /* ---- carved inscription glyphs (procedural, seed-keyed per block) ---- */
+        float _gbar(vec2 p, vec2 c, vec2 h){
+          vec2 d = abs(p - c) - h;
+          return 1.0 - smoothstep(-0.02, 0.06, max(d.x, d.y));
+        }
+        float _glyphSdf(vec2 p, float id){
+          float g = 0.0;
+          if (id < 0.13)      g = _gbar(p, vec2(0.5, 0.5), vec2(0.09, 0.30));            /* tall bar */
+          else if (id < 0.26) g = _gbar(p, vec2(0.5, 0.5), vec2(0.28, 0.09));            /* wide bar */
+          else if (id < 0.38) { float r = length(p - 0.5); g = 1.0 - smoothstep(0.045, 0.10, abs(r - 0.21)); } /* ring */
+          else if (id < 0.50) g = max(_gbar(p, vec2(0.34, 0.5), vec2(0.07, 0.28)),
+                                      _gbar(p, vec2(0.66, 0.5), vec2(0.07, 0.28)));      /* twin bars */
+          else if (id < 0.60) { float r = length(p - 0.5); g = 1.0 - smoothstep(0.10, 0.17, r); } /* dot */
+          else if (id < 0.72) g = max(_gbar(p, vec2(0.5, 0.32), vec2(0.26, 0.075)),
+                                      _gbar(p, vec2(0.5, 0.64), vec2(0.26, 0.075)));     /* double rule */
+          else if (id < 0.84) g = max(_gbar(p, vec2(0.36, 0.42), vec2(0.075, 0.26)),
+                                      _gbar(p, vec2(0.55, 0.68), vec2(0.24, 0.075)));    /* L mark */
+          return g;
+        }
+        float _carveField(vec2 fuv, float seed){
+          vec2 grid = vec2(9.0, 6.0);
+          vec2 g = fuv * grid;
+          vec2 cell = floor(g);
+          float id = _hash(cell + vec2(floor(seed * 913.7), floor(seed * 417.3)));
+          return _glyphSdf(fract(g), id);
         }`)
       /* roughness breakup: per-pixel noise varies roughness */
       .replace('#include <map_fragment>', `
         vec4 sampledDiffuseColor = texture2D( map, vVarUv );
         diffuseColor *= sampledDiffuseColor;
         /* scanned AO map modulates albedo */
-        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, 0.55);
+        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, 0.38);
         /* Phase 2: baked lightmap — warm sandstone bake w/ directional shading + AO */
         {
           vec3 _lm = texture2D( uLightmap, vec2(vLmUv.x, 1.0 - vLmUv.y) ).rgb;
-          /* per-block macro tone variation (wide, seed-keyed) */
-          float _tone = 0.80 + 0.40 * fract(vSeed * 7.13);
+          /* per-block macro tone variation (subtle, seed-keyed) */
+          float _tone = 0.88 + 0.24 * fract(vSeed * 7.13);
           _lm *= _tone;
           diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 1.45, 0.45);
         }
@@ -774,32 +869,59 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           float _bd = min(min(vFaceUv.x, 1.0 - vFaceUv.x), min(vFaceUv.y, 1.0 - vFaceUv.y));
           float _gap = 1.0 - smoothstep(0.0, 0.055, _bd);
           float _wear = smoothstep(0.16, 0.045, _bd) * (1.0 - _gap);
-          diffuseColor.rgb *= 1.0 - _gap * 0.30;
+          diffuseColor.rgb *= 1.0 - _gap * 0.22;
           diffuseColor.rgb += _wear * 0.045 * vec3(1.0, 0.94, 0.82);
+        }
+        /* carved inscriptions on side faces: seed-keyed glyph grid, worn by noise */
+        float _carveG = 0.0;
+        {
+          vec3 _cwN = normalize(vWNormal);
+          float _sideM = 1.0 - smoothstep(0.35, 0.6, abs(_cwN.y));                /* vertical faces only */
+          float _bd2 = min(min(vFaceUv.x, 1.0 - vFaceUv.x), min(vFaceUv.y, 1.0 - vFaceUv.y));
+          float _edgeM = smoothstep(0.05, 0.12, _bd2);                            /* keep clear of joints */
+          float _wearN = _noise(vWPos.xz * 1.1 + vec2(vSeed * 31.7, vSeed * 12.9));
+          float _wearM = smoothstep(0.28, 0.55, _wearN);                          /* patches worn smooth */
+          float _blockM = step(0.25, fract(vSeed * 3.71));                        /* ~75% of blocks inscribed */
+          _carveG = _carveField(vFaceUv, vSeed) * _sideM * _edgeM * _wearM * _blockM;
+          diffuseColor.rgb *= 1.0 - _carveG * 0.20;                               /* carve shadow */
         }
         /* sand accumulation on upward-facing surfaces */
         {
           vec3 _wN = normalize(vWNormal);
           float _up = smoothstep(0.35, 0.85, _wN.y);
           float _sn = _noise(vWPos.xz * 1.7) * 0.6 + _noise(vWPos.xz * 6.3) * 0.4;
-          float _sandAmt = _up * smoothstep(0.34, 0.66, _sn) * 0.60;
+          float _sandAmt = _up * smoothstep(0.38, 0.70, _sn) * 0.42;
           vec3 _sand = texture2D( uSandTex, vWPos.xz * 0.11 ).rgb;
-          diffuseColor.rgb = mix(diffuseColor.rgb, _sand * 0.68, _sandAmt);
+          diffuseColor.rgb = mix(diffuseColor.rgb, _sand * 0.55, _sandAmt);
         }
       `)
-      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+      /* expanded r128 chunk: roughness must sample the same per-face crop
+         (vVarUv) as the color map — the include itself samples atlas vUv */
+      .replace('#include <roughnessmap_fragment>', `
+        float roughnessFactor = roughness;
+        #ifdef USE_ROUGHNESSMAP
+          vec4 texelRoughness = texture2D( roughnessMap, vVarUv );
+          roughnessFactor *= texelRoughness.g;
+        #endif
         {
           float _rn = _noise(vWPos.xz * 2.1 + vVar.xy * 40.0);
           float _rn2 = _noise(vWPos.xy * 3.3 + vVar.z * 50.0);
           roughnessFactor = clamp(roughnessFactor * (0.78 + _rn * 0.5) + (_rn2 - 0.5) * 0.18, 0.35, 1.0);
         }`)
-      /* detail normal + micro AO + per-block tone variation */
-      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+      /* detail normal + micro AO + per-block tone variation.
+         Expanded r128 tangent-space path so the normal map samples vVarUv */
+      .replace('#include <normal_fragment_maps>', `
+        vec3 mapN = texture2D( normalMap, vVarUv ).xyz * 2.0 - 1.0;
+        mapN.xy *= normalScale;
+        normal = perturbNormal2Arb( -vViewPosition, normal, mapN, faceDirection );
         {
           /* high-freq detail normal from world-space noise */
           float _dn = _noise(vWPos.xz * 9.0) * 0.5 + _noise(vWPos.xz * 27.0) * 0.5;
           vec3 _detailN = normalize(vec3(dFdx(_dn) * 8.0, dFdy(_dn) * 8.0, 1.0));
           normal = normalize(normal + _detailN * 0.35);
+          /* carved glyph relief: emboss from screen-space carve gradient */
+          vec3 _carveN = normalize(vec3(dFdx(_carveG) * 5.0, dFdy(_carveG) * 5.0, 1.0));
+          normal = normalize(normal + _carveN * 0.55);
         }`)
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>
         {
@@ -814,8 +936,12 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
      with each face's UV remapped into its 3x2 tile-local sub-rect. */
   const pyramidGeo = (() => {
     /* subdivided box: SUB x SUB grid per face (interior verts allow erosion displacement).
-       Corner positions identical to the exporter's FACES definition. */
-    const SUB = 5; /* 5x5 verts per face -> 150 verts/block */
+       Corner positions identical to the exporter's FACES definition.
+       Phase A: vertices are projected onto a rounded box (bevel radius BEVEL in
+       unit space) with edge-biased grid distribution — pillow-carved blocks
+       like the reference render instead of razor-sharp boxes. */
+    const SUB = 9; /* 9x9 verts per face -> 486 verts/block (shared, instanced) */
+    const BEVEL = 0.11; /* unit-space bevel radius (~0.25 world units per cell) */
     const hx = 0.5, hy = 0.5, hz = 0.5;
     const FACES = [
       { n: [1,0,0],  c: [[hx,-hy,-hz],[hx,hy,-hz],[hx,hy,hz],[hx,-hy,hz]] },
@@ -836,16 +962,35 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       const base = f * SUB * SUB;
       for (let gy = 0; gy < SUB; gy++) {
         for (let gx = 0; gx < SUB; gx++) {
-          const u = gx / (SUB - 1), v = gy / (SUB - 1);
+          const u0 = gx / (SUB - 1), v0 = gy / (SUB - 1);
+          /* edge-biased grid: concentrate vertices near edges so the bevel
+             gets most of the subdivision resolution */
+          const u = 0.5 + 0.5 * Math.sin(Math.PI * (u0 - 0.5));
+          const v = 0.5 + 0.5 * Math.sin(Math.PI * (v0 - 0.5));
           /* bilinear interpolation of the 4 corners (quad order: 00,10,11,01) */
           const c0 = face.c[0], c1 = face.c[1], c2 = face.c[2], c3 = face.c[3];
+          const p = [0, 0, 0];
           for (let k = 0; k < 3; k++) {
-            pos.push(
-              c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) +
-              c2[k] * u * v + c3[k] * (1 - u) * v
-            );
+            p[k] = c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) +
+                   c2[k] * u * v + c3[k] * (1 - u) * v;
           }
-          nrm.push(...face.n);
+          /* rounded-box projection: clamp to the inner box, push the remainder
+             out to radius BEVEL — sharp edges/corners become spherical bevels */
+          const inner = 0.5 - BEVEL;
+          const q = [
+            Math.max(-inner, Math.min(inner, p[0])),
+            Math.max(-inner, Math.min(inner, p[1])),
+            Math.max(-inner, Math.min(inner, p[2]))
+          ];
+          const d = [p[0] - q[0], p[1] - q[1], p[2] - q[2]];
+          const dl = Math.hypot(d[0], d[1], d[2]);
+          if (dl > 1e-6) {
+            pos.push(q[0] + d[0] / dl * BEVEL, q[1] + d[1] / dl * BEVEL, q[2] + d[2] / dl * BEVEL);
+            nrm.push(d[0] / dl, d[1] / dl, d[2] / dl);
+          } else {
+            pos.push(p[0], p[1], p[2]);
+            nrm.push(...face.n);
+          }
           uvs.push(ru + u / 3, rv + v / 2);
           fuv.push(u, v);
         }
@@ -903,20 +1048,25 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
   /* white energy core inside — intense, clean sci-fi light */
   const core = new THREE.Mesh(
-    new THREE.ConeGeometry(PYR_BASE * 0.88, PYR_H * 0.96, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xfff0d8 })
+    /* 8-sided backing hugs the inside of the block shell (4-sided rotated cone
+       left a ~5u gap at mid-face: inradius = r*cos45 — holes saw the lit interior) */
+    new THREE.ConeGeometry(PYR_BASE * 1.03, PYR_H * 0.90, 8, 1),
+    /* unlit dark-tinted stone so eroded holes read as shadowed interior
+       masonry — flat near-black made the gaps look like broken voids
+       (Standard+emissive rendered bright cream) */
+    new THREE.MeshBasicMaterial({ color: 0x4a3b28, map: stoneColorTex })
   );
-  core.rotation.y = Math.PI / 4;
-  core.position.y = PYR_H * 0.47;
+  core.rotation.y = Math.PI / 8;
+  core.position.y = PYR_H * 0.45;
   scene.add(core);
   const coreHalo = new THREE.Mesh(
     new THREE.ConeGeometry(PYR_BASE * 0.95, PYR_H * 1.02, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xffe0b0, transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false })
+    new THREE.MeshBasicMaterial({ color: 0xffe0b0, transparent: true, opacity: 0.0, blending: THREE.AdditiveBlending, depthWrite: false })
   );
   coreHalo.rotation.y = Math.PI / 4;
   coreHalo.position.y = PYR_H * 0.5;
   scene.add(coreHalo);
-  const coreLight = new THREE.PointLight(0xffd0a0, 3.6, 110, 1.8);
+  const coreLight = new THREE.PointLight(0xffd0a0, 0.0, 110, 1.8);
   coreLight.position.set(0, PYR_H * 0.45, 0);
   scene.add(coreLight);
   /* second low light so the glow spills onto the sand through the base seams */
@@ -928,7 +1078,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* ---- floating glowing tetrahedron ---- */
   const tetraGeo = new THREE.CylinderGeometry(0.01, 1.2, 2.2, 3, 1, false);
   const tetraMat = new THREE.MeshStandardMaterial({
-    color: 0xfffaf0, emissive: 0xfff5e8, emissiveIntensity: 3.0,
+    color: 0xfffaf0, emissive: 0xfff5e8, emissiveIntensity: 2.2,
     roughness: 0.2, metalness: 0.0, transparent: true, opacity: 0.97
   });
   const tetra = new THREE.Mesh(tetraGeo, tetraMat);
@@ -948,14 +1098,17 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const tetraGlow = new THREE.Sprite(new THREE.SpriteMaterial({
     map: tetraGlowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true
   }));
-  tetraGlow.scale.set(5.5, 5.5, 1);
+  tetraGlow.scale.set(3.0, 3.0, 1);
+  tetraGlow.material.opacity = 0.65;
   tetraGlow.position.copy(tetra.position);
   scene.add(tetraGlow);
-  const tetraLight = new THREE.PointLight(0xffe8cc, 22, 32, 2);
+  const tetraLight = new THREE.PointLight(0xffe8cc, 10, 30, 2);
   tetraLight.position.copy(tetra.position);
   scene.add(tetraLight);
   /* light shaft from tetra down to apex */
-  const shaftGeo = new THREE.ConeGeometry(1.5, PYR_H + 2.5, 32, 1, true);
+  /* short beam apex→prism only; the old full-height cone ran down inside the
+     pyramid and leaked through the eroded holes as pale wedges */
+  const shaftGeo = new THREE.ConeGeometry(1.5, 4.5, 32, 1, true);
   const shaftMat = new THREE.ShaderMaterial({
     transparent: true, depthWrite: false, side: THREE.DoubleSide,
     blending: THREE.AdditiveBlending,
@@ -966,12 +1119,12 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         float h = vUv.y;
         float shaft = pow(h, 2.2) * 0.20;
         shaft *= 0.7 + 0.3 * sin(uTime * 0.5 + h * 7.0);
-        vec3 col = vec3(1.0, 0.80, 0.52) * shaft;
+        vec3 col = vec3(1.0, 0.0, 1.0) * shaft;
         gl_FragColor = vec4(col, shaft);
       }`
   });
   const shaft = new THREE.Mesh(shaftGeo, shaftMat);
-  shaft.position.y = (PYR_H + 2.5) / 2 + 1.0;
+  shaft.position.y = PYR_H + 2.5 - 4.5 / 2;
   shaft.rotation.x = Math.PI;
   scene.add(shaft);
 
@@ -1419,11 +1572,13 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   holoCore.position.set(0, PYR_H * 0.42, 0);
   const holoCoreGlow = new THREE.Sprite(new THREE.SpriteMaterial({
     map: makeGlowTexture(), transparent: true, opacity: 0.85,
-    blending: THREE.AdditiveBlending, depthWrite: false, color: 0xeaf1ff
+    blending: THREE.AdditiveBlending, depthWrite: false, color: 0xffe2b0
   }));
   holoCoreGlow.scale.set(16, 16, 1);
   holoCoreGlow.position.copy(holoCore.position);
-  const holoLight = new THREE.PointLight(0xf2f6ff, 2.4, 90, 2);
+  /* Phase B: prism as a real WARM light source (reference render: amber key
+     from the prism onto the upper blocks) */
+  const holoLight = new THREE.PointLight(0xffc98a, 3.0, 110, 2);
   holoLight.position.copy(holoCore.position);
   holoGroup.add(holoCore, holoCoreGlow, holoLight);
 
@@ -1528,7 +1683,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
      VOLUMETRIC RAYMARCHING FOG (depth-aware post pass)
   ============================================================ */
   const STEPS = isMobile ? 22 : 42;
-  const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR);
+  const rt = new THREE.WebGLRenderTarget(innerWidth * DPR, innerHeight * DPR, {
+    type: THREE.HalfFloatType,
+    format: THREE.RGBAFormat,
+  });
   rt.texture.minFilter = THREE.LinearFilter;
   rt.depthTexture = new THREE.DepthTexture(innerWidth * DPR, innerHeight * DPR);
   rt.depthTexture.type = THREE.UnsignedIntType;
@@ -1544,7 +1702,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     uCorePos: { value: new THREE.Vector3(0, PYR_H * 0.5, 0) },
     uTime:    { value: 0 },
     uEnergy:  { value: 1 },
-    uDensity: { value: reduced ? 0.6 : 1.0 }
+    uDensity: { value: reduced ? 0.6 : 1.0 },
+    /* Phase C: single ACES lives here now (scene reaches rt linear) */
+    uExposure: { value: 0.35 }
   };
   const volMat = new THREE.ShaderMaterial({
     uniforms: volUniforms,
@@ -1555,7 +1715,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       uniform sampler2D tDiffuse, tDepth;
       uniform mat4 uInvProj, uInvView;
       uniform vec3 uCamPos, uCorePos;
-      uniform float uTime, uDensity, uEnergy;
+      uniform float uTime, uDensity, uEnergy, uExposure;
       #define STEPS ${STEPS}
 
       float hash(vec3 p){ p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
@@ -1574,11 +1734,11 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       }
       // fast wind advection close to the ground
       float density(vec3 p){
-        float low  = exp(-max(p.y, 0.0) * 0.38) * 2.2;
-        float haze = exp(-max(p.y, 0.0) * 0.09) * 0.55;
+        float low  = exp(-max(p.y, 0.0) * 0.38) * 1.8;
+        float haze = exp(-max(p.y, 0.0) * 0.14) * 0.28;
         vec3 wind = vec3(uTime * 4.5, 0.0, uTime * 0.6);   // strong lateral wind
         float n = fbm(p * 0.045 + wind * 0.05);
-        return (low + haze) * (0.55 + 0.75 * n) * 0.016 * uDensity;
+        return (low + haze) * (0.55 + 0.75 * n) * 0.009 * uDensity;
       }
       vec3 worldPos(vec2 uv, float depth){
         vec4 ndc  = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -1597,7 +1757,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         vec3 wpos = worldPos(vUv, depth);
         vec3 ro = uCamPos;
         vec3 rd = normalize(wpos - ro);
-        float maxD = min(length(wpos - ro), 380.0);
+        float maxD = min(length(wpos - ro), 260.0);
         float stepL = maxD / float(STEPS);
         float jitter = fract(sin(dot(vUv * 941.13, vec2(12.9898, 78.233))) * 43758.5453);
         vec3 p = ro + rd * stepL * jitter;
@@ -1607,9 +1767,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           float d = density(p);
           float cd = length(p - uCorePos);
           vec3 light =
-            vec3(0.72, 0.62, 0.48) * 0.22 +                                              // warm dusty ambient
-            vec3(1.00, 0.82, 0.55) * (9.0 / (1.0 + cd * cd * 0.035)) * 0.11 * uEnergy + // intense warm core
-            vec3(0.14, 0.12, 0.16) * 0.06;                                               // dim warm night sky
+            vec3(0.60, 0.54, 0.46) * 0.035 +                                             // faint neutral dust
+            vec3(1.00, 0.84, 0.58) * (9.0 / (1.0 + cd * cd * 0.06)) * 0.045 * uEnergy +  // warm core glow, localized
+            vec3(0.12, 0.11, 0.14) * 0.03;                                               // dim night sky
           float a = d * stepL;
           L += T * light * a;
           T *= exp(-a);
@@ -1617,15 +1777,46 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           p += rd * stepL;
         }
         vec3 col = sceneCol * T + L;
+        /* Phase C: horizon haze band — warm, noise-broken, distance-keyed
+           (only kicks in on far dunes / sky, never on the pyramid) */
+        {
+          float far = smoothstep(120.0, 250.0, maxD);
+          float band = exp(-abs(rd.y + 0.015) * 14.0);
+          float n = fbm(vec3(rd.x * 6.0, rd.z * 6.0, uTime * 0.03));
+          col += vec3(0.34, 0.21, 0.11) * band * far * (0.35 + 0.5 * n) * 0.35;
+        }
+        col *= uExposure;
         col *= 1.0 - dot(q, q) * 0.55;
+        /* Phase C grade: gentle desaturate + warm night tint (reference is
+           warm: RGB ratio ~1.16 / 1.0 / 0.84) */
+        {
+          float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+          col = mix(col, vec3(lum), 0.28);
+          col *= vec3(0.93, 0.99, 1.18);
+        }
+        /* ACES filmic tone mapping (Narkowicz approximation) */
+        {
+          float a = 2.51, b = 0.03, c = 2.43, d = 0.59, e = 0.14;
+          col = clamp((col * (a * col + b)) / (col * (c * col + d) + e), 0.0, 1.0);
+        }
+        /* linear to sRGB */
+        col = pow(col, vec3(1.0 / 2.2));
+        /* Phase C: filmic S-curve — crush night blacks, hold highlights */
+        col = mix(col, col * col * (3.0 - 2.0 * col), 0.40);
+        /* highlight gain: moonlit dune tops / prism pop like the reference */
+        col *= 1.0 + smoothstep(0.28, 0.85, dot(col, vec3(0.2126, 0.7152, 0.0722))) * 0.45;
+        /* film grain post-curve — doubles as dither against banding */
         float grain = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-        col += (grain - 0.5) * 0.022;
+        col += (grain - 0.5) * 0.016;
         gl_FragColor = vec4(col, 1.0);
       }
     `,
     depthWrite: false, depthTest: false
   });
   postScene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), volMat));
+  /* QA: ?exp=0.7 overrides the Phase C exposure for grade tuning */
+  const _expQ = parseFloat(new URLSearchParams(location.search).get('exp'));
+  if (!isNaN(_expQ)) volUniforms.uExposure.value = _expQ;
 
   /* ============================================================
      SOUND — synthesized desert wind (no external audio files)
@@ -1768,12 +1959,18 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const loaderNum = document.getElementById('loaderNum');
   const loaderFill = document.getElementById('loaderFill');
   let fake = 0;
-  const tick = setInterval(() => {
-    fake = Math.min(100, fake + Math.random() * 9 + 3);
-    loaderNum.textContent = String(Math.floor(fake)).padStart(3, '0');
-    loaderFill.style.width = fake + '%';
-    if (fake >= 100) { clearInterval(tick); startSequence(); }
-  }, 70);
+  if (STILL) {
+    loader.style.display = 'none';
+    state.intro = 1; state.introDone = true; state.phase = 'done';
+    ['#nav', '#soundBtn', '#toolBtns'].forEach(s => document.querySelectorAll(s).forEach(el => el.style.opacity = 1));
+  } else {
+    const tick = setInterval(() => {
+      fake = Math.min(100, fake + Math.random() * 9 + 3);
+      loaderNum.textContent = String(Math.floor(fake)).padStart(3, '0');
+      loaderFill.style.width = fake + '%';
+      if (fake >= 100) { clearInterval(tick); startSequence(); }
+    }, 70);
+  }
 
   function startSequence() {
     gsap.to(loader, { opacity: 0, duration: 1.0, ease: 'power2.inOut', onComplete: () => loader.style.display = 'none' });
@@ -2039,8 +2236,12 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
   function animate() {
     requestAnimationFrame(animate);
-    const dt = Math.min(clock.getDelta(), 0.05);
-    const t = clock.elapsedTime;
+    const dt = STILL ? 0 : Math.min(clock.getDelta(), 0.05);
+    const t = STILL ? 20 : clock.elapsedTime;
+    if (STILL && _texLoaded) {
+      _stillFrames++;
+      if (_stillFrames === 6) window.__stillReady = true;
+    }
 
     if (!state.introDone) {
       const p = THREE.MathUtils.clamp(state.intro, 0, 1);
@@ -2120,8 +2321,8 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     /* white energy — intense, clean sci-fi light escaping the seams
        (wakes up with the block materialization: matC) */
     const E = (fracture.energy + waveActivity * 0.9) * CFG.coreEnergy;
-    coreLight.intensity = 3.0 * E * matC;
-    coreLightLow.intensity = 1.0 * E * matC;
+    coreLight.intensity = 1.8 * E * matC;
+    coreLightLow.intensity = 0.6 * E * matC;
     coreHalo.material.opacity = (0.20 + 0.14 * (E - 1)) * matC;
     cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
     tetra.position.y = PYR_H + 2.5 + Math.sin(t * 0.7) * 0.28;
@@ -2130,7 +2331,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     tetraGlow.position.copy(tetra.position);
     tetraLight.position.copy(tetra.position);
     shaft.material.uniforms.uTime.value = t;
-    volUniforms.uEnergy.value = E * 1.15 * matC;
+    volUniforms.uEnergy.value = E * 0.7 * matC;
 
     /* wind: sand sheets scrolling + streaks racing across the floor
        (fades in with the materialization) */
@@ -2160,10 +2361,15 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     volUniforms.uInvProj.value.copy(camera.projectionMatrix).invert();
     volUniforms.uInvView.value.copy(camera.matrixWorld);
 
-    renderer.setRenderTarget(rt);
-    renderer.render(scene, camera);
-    renderer.setRenderTarget(null);
-    renderer.render(postScene, postCam);
+    if (NOFOG) {
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+    } else {
+      renderer.setRenderTarget(rt);
+      renderer.render(scene, camera);
+      renderer.setRenderTarget(null);
+      renderer.render(postScene, postCam);
+    }
   }
   animate();
 

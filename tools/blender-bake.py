@@ -43,11 +43,9 @@ try:
 except Exception as e:
     print('device setup warn:', e)
 sc.cycles.samples = SAMPLES
-try:
-    sc.cycles.use_denoising = True
-    sc.cycles.denoiser = 'OPENIMAGEDENOISE'
-except TypeError:
-    sc.cycles.use_denoising = True  # fallback to whatever is available
+# This Blender build ships without OpenImageDenoise; enabling denoising makes
+# the bake abort instantly with {'CANCELLED'} (no exception) -> black image.
+sc.cycles.use_denoising = False
 sc.cycles.max_bounces = 4
 sc.cycles.diffuse_bounces = 2
 sc.cycles.glossy_bounces = 2
@@ -179,6 +177,13 @@ bpy.context.view_layer.objects.active = pyr
 sc.render.bake.use_clear = True
 sc.render.bake.margin = 8
 print('BAKE START | objs:', len(bpy.data.objects), '| lights:', len([o for o in bpy.data.objects if o.type=='LIGHT']))
-bpy.ops.object.bake(type='COMBINED')
-img.save_render(OUT)
+res = bpy.ops.object.bake(type='COMBINED')
+print('bake op result:', res)
+if res != {'FINISHED'}:
+    raise RuntimeError('bake did not finish: %s' % res)
+# img.save() writes stored pixels (already sRGB) without the scene view
+# transform; save_render would apply AgX and skew the lightmap.
+img.filepath_raw = OUT
+img.file_format = 'PNG'
+img.save()
 print('BAKE DONE in %.1fs -> %s' % (time.time() - t0, OUT))
