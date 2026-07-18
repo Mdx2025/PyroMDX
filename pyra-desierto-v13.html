@@ -235,7 +235,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   const NOFOG = new URLSearchParams(location.search).has('nofog');
   const USE_JPG = new URLSearchParams(location.search).has('jpg'); /* ktx2 default (GPU-compressed); ?jpg falls back to the source jpgs for QA */
-  const TEX_VERSION = '20260718c'; /* bump when regenerating assets under assets/ */
+  const TEX_VERSION = '20260718d'; /* bump when regenerating assets under assets/ */
   /* QA still mode: ?still — skip intro, freeze time, flag readiness on window.__stillReady */
   const STILL = new URLSearchParams(location.search).has('still');
   let _texLoaded = false, _stillFrames = 0;
@@ -263,8 +263,11 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
   scene.add(new THREE.AmbientLight(0x3a2f24, 1.0));
   scene.add(new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55));
+  /* D1: key from upper-right, matching the baked rig in tools/blender-bake.py
+     (blender (48,-30,26) -> three (48,26,30)) so runtime speculars/normal maps
+     agree with the lightmap shadows */
   const keyLight = new THREE.DirectionalLight(0xf0dcb8, 1.15);
-  keyLight.position.set(-38, 46, 34);
+  keyLight.position.set(48, 26, 30);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
   keyLight.shadow.camera.left = -45; keyLight.shadow.camera.right = 45;
@@ -273,7 +276,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   keyLight.shadow.bias = -0.0006;
   scene.add(keyLight);
   const moonLight = new THREE.DirectionalLight(0xb0a890, 0.22);
-  moonLight.position.set(40, 60, 30);
+  moonLight.position.set(-30, 55, 25);
   scene.add(moonLight);
 
   /* Phase B: IBL — PMREM of a procedural warm-night sky (dark zenith, warm
@@ -545,7 +548,14 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform sampler2D uTerrainLm;
-          varying vec2 vTerrainLmUv;`)
+          varying vec2 vTerrainLmUv;
+          float _thash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+          float _tnoise(vec2 p){
+            vec2 i = floor(p), f = fract(p);
+            f = f * f * (3.0 - 2.0 * f);
+            return mix(mix(_thash(i), _thash(i + vec2(1,0)), f.x),
+                       mix(_thash(i + vec2(0,1)), _thash(i + vec2(1,1)), f.x), f.y);
+          }`)
         .replace('#include <map_fragment>', `#include <map_fragment>
           {
             /* ktx2 uploads unflipped (flipY=false): flip V like the pyramid
@@ -556,6 +566,23 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
             float _tlum = dot(_tlm, vec3(0.299, 0.587, 0.114));
             _tlm = mix(vec3(_tlum), _tlm, 0.45);
             diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.25, 0.62);
+          }`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+          {
+            /* D3: near-camera wind ripples + granular breakup. World-keyed
+               heightfield -> screen-space derivative normal (same trick as
+               the block detail normal); fades out past ~85wu so the
+               mid/far dunes keep their smooth baked read. */
+            float _fade = 1.0 - smoothstep(28.0, 85.0, length(vViewPosition));
+            if (_fade > 0.001) {
+              float _wob = _tnoise(vRevealW.xz * 0.9);
+              /* ripple crests roughly perpendicular to the wind (+x) */
+              float _rip = sin(vRevealW.x * 3.6 + _wob * 5.5 + vRevealW.z * 0.4) * 0.5 + 0.5;
+              float _gr = _tnoise(vRevealW.xz * 9.0) * 0.6 + _tnoise(vRevealW.xz * 23.0) * 0.4;
+              float _h = _rip * 0.6 + _gr * 0.4;
+              vec3 _dN = normalize(vec3(dFdx(_h) * 6.0, dFdy(_h) * 6.0, 1.0));
+              normal = normalize(normal + _dN * (0.5 * _fade));
+            }
           }`);
     };
   }
@@ -590,6 +617,28 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     rocks.instanceColor.needsUpdate = true;
     rocks.receiveShadow = true;
     scene.add(rocks);
+
+    /* D3: dense pebble field near the pyramid — small debris that gives the
+       foreground sand a physical scale reference (the far dunes stay clean) */
+    const PEB_N = isMobile ? 160 : 380;
+    const pebbles = new THREE.InstancedMesh(rockGeo, rockMat, PEB_N);
+    for (let i = 0; i < PEB_N; i++) {
+      const ang = Math.random() * Math.PI * 2;
+      const rad = 16 + Math.pow(Math.random(), 1.6) * 48;
+      const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+      const s = 0.045 + Math.pow(Math.random(), 1.8) * 0.16;
+      rd.position.set(x, duneH(x, z) + s * 0.3, z);
+      rd.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+      rd.scale.set(s * (0.8 + Math.random() * 0.6), s * (0.45 + Math.random() * 0.5), s * (0.8 + Math.random() * 0.6));
+      rd.updateMatrix();
+      pebbles.setMatrixAt(i, rd.matrix);
+      const v = 0.6 + Math.random() * 0.35;
+      rc.setRGB(0.55 * v, 0.52 * v, 0.47 * v);
+      pebbles.setColorAt(i, rc);
+    }
+    pebbles.instanceColor.needsUpdate = true;
+    pebbles.receiveShadow = true;
+    scene.add(pebbles);
   }
 
   /* ---- floor blueprint: white geometric wireframe of the terrain ----
@@ -1102,6 +1151,15 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   tetraGlow.material.opacity = 0.65;
   tetraGlow.position.copy(tetra.position);
   scene.add(tetraGlow);
+  /* D4: wide faint halo — poor-man's bloom around the prism (the reference
+     capstone blows out into a soft atmospheric glow, not a hard dot) */
+  const tetraHalo = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tetraGlowTex, blending: THREE.AdditiveBlending, depthWrite: false,
+    transparent: true, color: 0xffe0c0, opacity: 0.16
+  }));
+  tetraHalo.scale.set(10.5, 10.5, 1);
+  tetraHalo.position.copy(tetra.position);
+  scene.add(tetraHalo);
   const tetraLight = new THREE.PointLight(0xffe8cc, 10, 30, 2);
   tetraLight.position.copy(tetra.position);
   scene.add(tetraLight);
@@ -1387,10 +1445,13 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   }
 
   /* ============================================================
-     WIND-BLOWN SAND — clearly visible advection
-     1) Two large tileable "sand sheets" scrolling fast just above
-        the floor (the unmistakable read of wind dragging sand).
-     2) Bright additive streaks concentrated in the camera corridor.
+     SUBTLE SANDSTORM (D2) — igloo-style depth instead of streak spam
+     1) Two low tileable dust billows drifting just above the floor
+        (fbm noise, normal blending — reads as suspended sand, not light).
+     2) Large dust-veil sprites at different depths for aerial
+        perspective (the pyramid sits *inside* the storm).
+     3) Fine wind-driven sand grain (Points) close to the ground.
+     4) A handful of dim gust streaks — accent, no longer the show.
   ============================================================ */
   function makeStreakTexture() {
     const W = 256, H = 32, cv = document.createElement('canvas');
@@ -1412,39 +1473,56 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     ctx.fillRect(0, 0, W, H);
     return new THREE.CanvasTexture(cv);
   }
-  /* horizontally tileable sheet of wind-streaked sand */
-  function makeSheetTexture() {
-    const S = 512, cv = document.createElement('canvas');
+  /* seamless fbm dust texture — value noise on a wrapped lattice so every
+     octave tiles; alpha carries the wisps, RGB is flat warm dust */
+  function makeDustTexture() {
+    const S = 512, P = 64;
+    const lat = new Float32Array(P * P);
+    for (let i = 0; i < lat.length; i++) lat[i] = Math.random();
+    const fade = v => v * v * (3 - 2 * v);
+    function noise(x, y, per) {
+      const xi = Math.floor(x), yi = Math.floor(y);
+      const xf = x - xi, yf = y - yi;
+      const smp = (a, b) => lat[((b % per + per) % per) * P + ((a % per + per) % per)];
+      const u = fade(xf), v = fade(yf);
+      const a = smp(xi, yi), b = smp(xi + 1, yi);
+      const c = smp(xi, yi + 1), d = smp(xi + 1, yi + 1);
+      return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+    }
+    const cv = document.createElement('canvas');
     cv.width = cv.height = S;
     const ctx = cv.getContext('2d');
-    ctx.clearRect(0, 0, S, S);
-    for (let i = 0; i < 150; i++) {
-      const y = Math.random() * S;
-      const w = 50 + Math.random() * 220;
-      const h = 0.8 + Math.random() * 2.4;
-      const x = Math.random() * S;
-      const a = 0.05 + Math.random() * 0.20;
-      const g = ctx.createLinearGradient(x, 0, x + w, 0);
-      g.addColorStop(0, 'rgba(232,222,198,0)');
-      g.addColorStop(0.4, `rgba(232,222,198,${a})`);
-      g.addColorStop(1, 'rgba(232,222,198,0)');
-      ctx.fillStyle = g;
-      ctx.fillRect(x, y, w, h);
-      ctx.fillRect(x - S, y, w, h);           // duplicate for seamless wrap
+    const img = ctx.createImageData(S, S);
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        let f = 0, amp = 0.55, per = 4;
+        for (let o = 0; o < 4; o++) {
+          f += amp * noise(x / S * per, y / S * per, per);
+          amp *= 0.5; per *= 2;
+        }
+        f = Math.min(1, f / 1.03);
+        /* only the upper part of the noise becomes visible dust -> wispy */
+        const a = Math.pow(Math.max(0, (f - 0.38) / 0.62), 1.8);
+        const k = (y * S + x) * 4;
+        img.data[k] = 214; img.data[k + 1] = 198; img.data[k + 2] = 166;
+        img.data[k + 3] = Math.round(255 * Math.min(1, a));
+      }
     }
+    ctx.putImageData(img, 0, 0);
     const tex = new THREE.CanvasTexture(cv);
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     return tex;
   }
   const streakTex = makeStreakTexture();
-  const sheetTex = makeSheetTexture();
+  const dustTex = makeDustTexture();
 
+  /* 1) ground billows — slow drifting dust hugging the floor */
   const sandSheets = [];
   [
-    { y: 0.45, repeat: 4, opacity: 0.5, speed: 0.28, rotY: 0 },
-    { y: 0.95, repeat: 3, opacity: 0.3, speed: 0.17, rotY: 0.18 }
+    { y: 0.5, repeat: 3, opacity: 0.20, speed: 0.045, rotY: 0 },
+    { y: 1.15, repeat: 2, opacity: 0.12, speed: 0.028, rotY: 0.22 }
   ].forEach(cfg => {
-    const tex = sheetTex.clone();
+    const tex = dustTex.clone();
     tex.needsUpdate = true;
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(cfg.repeat, cfg.repeat);
@@ -1452,7 +1530,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       new THREE.PlaneGeometry(260, 260),
       new THREE.MeshBasicMaterial({
         map: tex, transparent: true, opacity: cfg.opacity,
-        blending: THREE.AdditiveBlending, depthWrite: false, color: 0xbfb49a
+        depthWrite: false, color: 0xcfc2a4
       })
     );
     mesh.rotation.x = -Math.PI / 2;
@@ -1463,22 +1541,68 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     sandSheets.push(mesh);
   });
 
-  const streaks = [];
-  const STREAK_N = reduced ? 40 : (isMobile ? 70 : 150);
+  /* 2) dust veils — big soft sprites at staggered depths: each veil knocks
+     the layer behind it back a step (aerial perspective, igloo-style) */
+  const dustVeils = [];
+  [
+    { x: -20, y: 10, z: -50, sx: 170, sy: 46, o: 0.10, speed: 0.014 },
+    { x:  28, y: 14, z: -85, sx: 230, sy: 60, o: 0.08, speed: 0.010 },
+    { x:  -4, y:  6, z:  42, sx: 150, sy: 34, o: 0.05, speed: 0.020 }
+  ].forEach(cfg => {
+    const tex = dustTex.clone();
+    tex.needsUpdate = true;
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(2, 1);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, transparent: true, depthWrite: false,
+      color: 0xbfb098, opacity: cfg.o
+    }));
+    sp.position.set(cfg.x, cfg.y, cfg.z);
+    sp.scale.set(cfg.sx, cfg.sy, 1);
+    sp.userData = { tex, speed: cfg.speed, baseO: cfg.o };
+    scene.add(sp);
+    dustVeils.push(sp);
+  });
+
   /* corridor the camera actually sees: around the pyramid & foreground */
   const WX = { min: -95, max: 95 }, WZ = { min: -55, max: 70 };
+
+  /* 3) fine sand grain — small wind-driven points near the ground */
+  const GRAIN_N = reduced ? 200 : (isMobile ? 400 : 900);
+  const grainPos = new Float32Array(GRAIN_N * 3);
+  const grainVel = new Float32Array(GRAIN_N * 2);   // vx, sway phase
+  for (let i = 0; i < GRAIN_N; i++) {
+    const x = WX.min + Math.random() * (WX.max - WX.min);
+    const z = WZ.min + Math.random() * (WZ.max - WZ.min);
+    grainPos[i * 3] = x;
+    grainPos[i * 3 + 1] = 0.2 + Math.random() * 2.6 + Math.max(0, duneH(x, z));
+    grainPos[i * 3 + 2] = z;
+    grainVel[i * 2] = 3 + Math.random() * 5;
+    grainVel[i * 2 + 1] = Math.random() * Math.PI * 2;
+  }
+  const grainGeo = new THREE.BufferGeometry();
+  grainGeo.setAttribute('position', new THREE.BufferAttribute(grainPos, 3));
+  const grain = new THREE.Points(grainGeo, new THREE.PointsMaterial({
+    color: 0xd8cbaa, size: 0.07, transparent: true, opacity: 0.4,
+    depthWrite: false, sizeAttenuation: true
+  }));
+  scene.add(grain);
+
+  /* 4) rare dim gusts — the old streaks, demoted to an accent */
+  const streaks = [];
+  const STREAK_N = reduced ? 8 : (isMobile ? 14 : 26);
   for (let i = 0; i < STREAK_N; i++) {
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
       map: streakTex, transparent: true, depthWrite: false,
       blending: THREE.AdditiveBlending,
-      color: 0xd9cdac, opacity: 0.20 + Math.random() * 0.22
+      color: 0xd9cdac, opacity: 0.08 + Math.random() * 0.10
     }));
     const x = WX.min + Math.random() * (WX.max - WX.min);
     const z = WZ.min + Math.random() * (WZ.max - WZ.min);
     sp.position.set(x, 0.3 + Math.random() * 1.7 + Math.max(0, duneH(x, z)), z);
     sp.scale.set(8 + Math.random() * 13, 0.22 + Math.random() * 0.45, 1);
     sp.userData = {
-      vx: 9 + Math.random() * 15,             // fast: wind, not fog
+      vx: 6 + Math.random() * 8,              // slower: drifting, not racing
       sway: Math.random() * Math.PI * 2,
       baseO: sp.material.opacity
     };
@@ -1805,9 +1929,11 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         col = mix(col, col * col * (3.0 - 2.0 * col), 0.40);
         /* highlight gain: moonlit dune tops / prism pop like the reference */
         col *= 1.0 + smoothstep(0.28, 0.85, dot(col, vec3(0.2126, 0.7152, 0.0722))) * 0.45;
-        /* film grain post-curve — doubles as dither against banding */
-        float grain = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
-        col += (grain - 0.5) * 0.016;
+        /* film grain post-curve — doubles as dither against banding.
+           D4: fixed spatial frequency + time re-seed (the old vUv*(uTime+1)
+           stretched the pattern radially instead of re-randomizing it) */
+        float grain = fract(sin(dot(vUv * 913.1 + fract(uTime * 61.7), vec2(12.9898, 78.233))) * 43758.5453);
+        col += (grain - 0.5) * 0.014;
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -2329,18 +2455,39 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     tetra.rotation.y = t * 0.12;
     tetraMat.emissiveIntensity = 2.2 * (0.9 + Math.sin(t * 1.0) * 0.1);
     tetraGlow.position.copy(tetra.position);
+    tetraHalo.position.copy(tetra.position);
+    tetraHalo.material.opacity = 0.16 * (0.85 + Math.sin(t * 1.0) * 0.15);
     tetraLight.position.copy(tetra.position);
     shaft.material.uniforms.uTime.value = t;
     volUniforms.uEnergy.value = E * 0.7 * matC;
 
-    /* wind: sand sheets scrolling + streaks racing across the floor
-       (fades in with the materialization) */
+    /* D2 sandstorm: billows drift, veils breathe, grain rides the wind,
+       gusts accent (all fade in with the materialization) */
     const windMul = reduced ? 0.25 : 1;
     for (let i = 0; i < sandSheets.length; i++) {
       const sh = sandSheets[i];
       sh.userData.tex.offset.x -= sh.userData.speed * dt * windMul;
+      sh.userData.tex.offset.y += sh.userData.speed * 0.23 * dt * windMul;
       sh.material.opacity = sh.userData.baseO * matW;
     }
+    for (let i = 0; i < dustVeils.length; i++) {
+      const vl = dustVeils[i];
+      vl.userData.tex.offset.x -= vl.userData.speed * dt * windMul;
+      vl.material.opacity = vl.userData.baseO *
+        (0.85 + 0.15 * Math.sin(t * 0.23 + i * 2.1)) * matW;
+    }
+    const gp = grain.geometry.attributes.position.array;
+    for (let i = 0; i < GRAIN_N; i++) {
+      gp[i * 3] += grainVel[i * 2] * dt * windMul;
+      gp[i * 3 + 1] += Math.sin(t * 1.7 + grainVel[i * 2 + 1]) * dt * 0.35 * windMul;
+      if (gp[i * 3] > WX.max) {
+        gp[i * 3] = WX.min;
+        gp[i * 3 + 2] = WZ.min + Math.random() * (WZ.max - WZ.min);
+        gp[i * 3 + 1] = 0.2 + Math.random() * 2.6 + Math.max(0, duneH(gp[i * 3], gp[i * 3 + 2]));
+      }
+    }
+    grain.geometry.attributes.position.needsUpdate = true;
+    grain.material.opacity = 0.4 * matW;
     for (let i = 0; i < streaks.length; i++) {
       const sp = streaks[i], u = sp.userData;
       sp.position.x += u.vx * dt * windMul;

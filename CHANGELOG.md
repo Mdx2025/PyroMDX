@@ -2,6 +2,28 @@
 
 ## 2026-07-18
 
+### Changed (visual quality plan, phases D1-D4)
+- **Terrain lightmap re-bake with pyramid shadow caster (D1)** — new
+  `tools/bake-d1.sh` pipeline (exports → pyramid bake → terrain bake →
+  KTX2 encode) run on the heavy lane; `tools/blender-bake-terrain.py` now
+  imports the pyramid GLB as a shadow caster so the terrain lightmap carries
+  the pyramid's cast shadow. Runtime key light re-aimed from the upper right
+  to match the baked rig. Both `pyra_lightmap_4k.ktx2` and
+  `pyra_terrain_4k.ktx2` regenerated (etc1s qlevel 192), `TEX_VERSION` →
+  `20260718d`. Terrain bake sanity: mean 93.4/255, std 31.3 (non-flat,
+  shadow content present).
+- **Sandstorm system (D2)** — seamless fbm dust texture (512² wrapped value
+  noise); four layers: slow ground billows, big soft dust veils at staggered
+  depths, fine wind-driven sand grain (900 pts desktop / 400 mobile / 200
+  reduced-motion), and rare dim gust streaks demoted to an accent.
+- **Near-camera wind ripples + pebble field (D3)** — world-keyed ripple
+  crests perpendicular to the wind (+x) with granular breakup; dense small
+  debris field near the pyramid (380 pebbles desktop / 160 mobile).
+- **Prism halo (D4)** — wide faint additive halo around the prism
+  (poor-man's bloom matching the reference's glow).
+- QA: `?still` harness via Playwright, night + nofog, **0 page errors**;
+  night grade mean 57.5 vs reference 58.7 (Phase C was 64.9).
+
 ### Changed (visual quality plan, phases A+B)
 - **Rounded carved blocks (Phase A)** — `pyramidGeo` now projects the
   subdivided face grid onto a rounded box (bevel radius 0.11 unit space,

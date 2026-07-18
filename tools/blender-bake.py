@@ -73,7 +73,7 @@ def srgb_lin(c):
     return tuple(pow(v / 255.0, 2.2) for v in c) + (1.0,)
 amb = srgb_lin((0x3a, 0x2f, 0x24))
 n_bg.inputs['Color'].default_value = amb
-n_bg.inputs['Strength'].default_value = 0.42
+n_bg.inputs['Strength'].default_value = 0.32  # D1: deeper shadow floor
 wl.new(n_bg.outputs['Background'], n_out.inputs['Surface'])
 sc.world = w
 
@@ -99,10 +99,13 @@ def add_point(name, rgb, energy_w, pos, radius=0.5):
     lo.location = pos
     return lo
 
-# key light: three dir 0.85 -> blender sun ~2.2 (sun energy scale differs)
-add_sun('key', (0xf0, 0xc8, 0x98), 3.8, (-50, -38, 18))   # three(-38,46,34) -> blender(x,-z,y)
-add_sun('moon', (0x90, 0xa8, 0xd0), 0.5, (40, -30, 60))
-add_sun('fill', (0xd0, 0xa8, 0x78), 1.2, (45, 30, 20))   # warm bounce from shadow side  # three(40,60,30) -> blender
+# Phase D1: single DOMINANT warm key from upper-right (matches the reference
+# render's light direction), elevation ~25 deg for long readable shadows.
+# The old rig (key 3.8 + fill 1.2 from the opposite side + ambient 0.42)
+# filled in exactly what the key shadowed -> flat faces.
+add_sun('key', (0xf0, 0xc8, 0x98), 5.2, (48, -30, 26))
+add_sun('moon', (0x90, 0xa8, 0xd0), 0.4, (-30, 25, 55))   # cool rim, opposite high
+add_sun('fill', (0xd0, 0xa8, 0x78), 0.35, (-45, 30, 20))  # faint bounce only  # three(40,60,30) -> blender
 # core warm points (three intensity 3.6 decay ~1.8 -> blender watts rough match)
 add_point('core', (0xff, 0xd8, 0xb0), 900, (0, 0, PYR_H * 0.45), 1.2)   # three y-up -> blender z-up
 add_point('corelow', (0xff, 0xc8, 0x90), 350, (0, 0, 2.2), 1.0)

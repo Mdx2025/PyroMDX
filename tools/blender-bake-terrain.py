@@ -19,6 +19,17 @@ terrain = [o for o in bpy.data.objects if o.type == 'MESH'][0]
 terrain.select_set(True)
 bpy.context.view_layer.objects.active = terrain
 
+# ---------- pyramid as shadow caster (D1) ----------
+# igloo bakes the ground WITH the igloo's shadow/AO (that is why
+# ground_sansigloo_color.ktx2 exists). Import the pyramid so the terrain
+# lightmap picks up its cast shadow + contact darkening; only the terrain
+# is selected for the bake, the pyramid just occludes rays.
+PYR_GLB = '/tmp/pyra-pyramid.glb'
+bpy.ops.object.select_all(action='DESELECT')
+bpy.ops.import_scene.gltf(filepath=PYR_GLB)
+pyr_meshes = [o for o in bpy.context.selected_objects if o.type == 'MESH']
+print('shadow caster meshes:', len(pyr_meshes))
+
 # ---------- render engine ----------
 sc = bpy.context.scene
 sc.render.engine = 'CYCLES'
@@ -32,11 +43,9 @@ try:
 except Exception as e:
     print('device setup warn:', e)
 sc.cycles.samples = SAMPLES
-sc.cycles.use_denoising = True
-try:
-    sc.cycles.denoiser = 'OPENIMAGEDENOISE'
-except TypeError:
-    pass
+# This Blender build ships without OpenImageDenoise; enabling denoising makes
+# the bake abort instantly with {'CANCELLED'} (no exception) -> black image.
+sc.cycles.use_denoising = False
 sc.cycles.max_bounces = 4
 sc.cycles.diffuse_bounces = 2
 sc.cycles.glossy_bounces = 2
@@ -59,7 +68,7 @@ def srgb_lin(c):
     return tuple(pow(v / 255.0, 2.2) for v in c) + (1.0,)
 amb = srgb_lin((0x3a, 0x2f, 0x24))
 n_bg.inputs['Color'].default_value = amb
-n_bg.inputs['Strength'].default_value = 0.42
+n_bg.inputs['Strength'].default_value = 0.32  # D1: deeper shadow floor (match pyramid bake)
 wl.new(n_bg.outputs['Background'], n_out.inputs['Surface'])
 sc.world = w
 
@@ -85,9 +94,10 @@ def add_point(name, rgb, energy_w, pos, radius=0.5):
     return lo
 
 PYR_H = 14.35
-add_sun('key', (0xf0, 0xc8, 0x98), 3.8, (-50, -38, 18))
-add_sun('moon', (0x90, 0xa8, 0xd0), 0.5, (40, -30, 60))
-add_sun('fill', (0xd0, 0xa8, 0x78), 1.2, (45, 30, 20))
+# D1 rig — MUST stay identical to tools/blender-bake.py (visual coherence)
+add_sun('key', (0xf0, 0xc8, 0x98), 5.2, (48, -30, 26))
+add_sun('moon', (0x90, 0xa8, 0xd0), 0.4, (-30, 25, 55))
+add_sun('fill', (0xd0, 0xa8, 0x78), 0.35, (-45, 30, 20))
 add_point('core', (0xff, 0xd8, 0xb0), 900, (0, 0, PYR_H * 0.45), 1.2)
 add_point('corelow', (0xff, 0xc8, 0x90), 350, (0, 0, 2.2), 1.0)
 
@@ -146,6 +156,13 @@ bpy.context.view_layer.objects.active = terrain
 sc.render.bake.use_clear = True
 sc.render.bake.margin = 16   # bigger margin for terrain (uv edges)
 print('TERRAIN BAKE START | verts:', len(terrain.data.vertices), '| lights:', len([o for o in bpy.data.objects if o.type=='LIGHT']))
-bpy.ops.object.bake(type='COMBINED')
-img.save_render(OUT)
+res = bpy.ops.object.bake(type='COMBINED')
+print('bake op result:', res)
+if res != {'FINISHED'}:
+    raise RuntimeError('bake did not finish: %s' % res)
+# img.save() writes stored pixels (already sRGB) without the scene view
+# transform; save_render would apply AgX and skew the lightmap.
+img.filepath_raw = OUT
+img.file_format = 'PNG'
+img.save()
 print('TERRAIN BAKE DONE in %.1fs -> %s' % (time.time() - t0, OUT))
