@@ -2,6 +2,43 @@
 
 ## 2026-07-18
 
+### Added (live tuning panel, "Ajustes")
+- **Tune panel** — left-side "Ajustes" panel (button in `#toolBtns`) with
+  **48 live controls** across 7 sections (pyramid deformity, block texture,
+  ground, lighting, prism, sandstorm, journey), every row with a short
+  Spanish description. Copy JSON (current values) + Reset (build-time
+  defaults) buttons.
+- **Live deformity without rebuild** — weathering refactored to store the
+  raw PRNG draws per block (`B.w`, byte-identical call order to
+  `tools/export-pyramid-glb.mjs`, so survivors/atlas/lightmap mapping are
+  unchanged); `applyWeathering()` recomputes jitter/yaw/tilt/scale/shrink
+  from raws × `TUNE` multipliers and `updatePyramid` rewrites instance
+  matrices per frame — deformity sliders apply instantly.
+- **Pre-compile-safe shader sliders** — shared uniform registries `TUNEU`
+  (block material: crop U/V, vertex displacement, lightmap mix/gain, AO,
+  joints, carve, sand, detail normal, roughness variance) and `GNDU`
+  (ground: lightmap mix, ripple strength/freq/fade) are `Object.assign`ed
+  into `shader.uniforms` in onBeforeCompile, so slider writes work whether
+  or not the shader has compiled yet.
+- Per-frame animated values (prism emissive/halo, storm layer opacities,
+  wind, journey speed/damping) routed through `TUNE` so animate() reads
+  live values instead of stomping slider changes.
+- Deliberately NOT exposed (would desync baked data): erosion probability
+  (re-roll re-splices survivors → 13×13 atlas desync), dune amplitudes
+  (terrain lightmap + rock/pebble placement), keyLight position (D1 bake
+  rig), block stone `repeat` (custom vVarUv sampling bypasses uvTransform —
+  crop U/V serve that role).
+- QA: Playwright `?still` p=0/0.25/0.5/0.75/1 → **0 page errors**; panel
+  DOM: 46 range + 2 color inputs, 7 sections, 49 descriptions, interaction
+  (max sliders, Reset, Copy) error-free; deformity sliders visibly reshape
+  the pyramid live; default-look identity vs previous commit: PSNR 33.5 dB
+  ≈ noise floor 33.8 dB (same-build reload; storm particles are
+  per-load random). GOTCHA: headless Chromium produces ~no compositor
+  frames on this page (rAF ticked once in 1.2s), so the panel's CSS
+  slide-in transition never advances in headless QA — verified by toggling
+  with `transition:none` (panel lands at x=0); same mechanism as the
+  shipped editor panel.
+
 ### Added (scroll narrative, phase E)
 - **Journey system** — virtual scroll (wheel/touch/arrow keys, no scrollbar)
   drives damped progress `p ∈ [0,1]`; camera flies a Catmull-Rom path of 5

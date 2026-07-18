@@ -127,6 +127,9 @@
 
 <!-- editor + timeline buttons — absolute top right -->
 <div class="fixed top-4 right-4 z-[75] flex gap-2 opacity-0" id="toolBtns">
+  <button id="tuneToggle" data-link
+    class="font-mono text-[.58rem] tracking-[.35em] uppercase text-dust bg-transparent border border-hairline px-4 py-2 transition-colors hover:text-bone hover:border-sand cursor-none"
+  >Ajustes</button>
   <button id="timelineToggle" data-link
     class="font-mono text-[.58rem] tracking-[.35em] uppercase text-dust bg-transparent border border-hairline px-4 py-2 transition-colors hover:text-bone hover:border-sand cursor-none"
   >Timeline</button>
@@ -170,6 +173,19 @@
     <button id="btnCopy" data-link class="flex-1 min-w-[120px] font-mono text-[.56rem] tracking-[.25em] uppercase text-bone bg-transparent border border-hairline py-3 px-2 transition-colors hover:bg-sand hover:text-night hover:border-sand cursor-none">⧉ Copiar config</button>
   </div>
   <p class="text-[.54rem] tracking-[.12em] text-dust leading-[1.8] mt-4">Los valores se aplican en vivo. «Copiar config» exporta un JSON con la configuración actual para fijarla en el código.</p>
+</aside>
+
+<!-- ============ TUNE PANEL — ajustes globales de la escena ============ -->
+<aside id="tunePanel"
+  class="fixed top-0 left-0 bottom-0 z-[70] w-[min(340px,88vw)] bg-night/90 backdrop-blur-xl border-r border-hairline px-6 py-7 overflow-y-auto font-mono -translate-x-[105%] transition-transform duration-500 [transition-timing-function:cubic-bezier(.22,1,.36,1)]">
+  <h3 class="text-[.62rem] tracking-[.4em] uppercase text-sand mb-2">Ajustes de escena</h3>
+  <p class="text-[.52rem] tracking-[.1em] text-dust leading-[1.8] mb-4">Todo se aplica en vivo. Cámara, intro, niebla y fractura viven en los paneles <b class="text-bone font-normal">Editor</b> y <b class="text-bone font-normal">Timeline</b>. Ojo: la deformidad y la luz principal están casadas con las sombras horneadas — moverlas mucho las desalinea (solo vista de editor).</p>
+  <div id="tuneBody"></div>
+  <div class="flex gap-2.5 mt-6 flex-wrap">
+    <button id="btnTuneCopy" data-link class="flex-1 min-w-[120px] font-mono text-[.56rem] tracking-[.25em] uppercase text-bone bg-transparent border border-hairline py-3 px-2 transition-colors hover:bg-sand hover:text-night hover:border-sand cursor-none">⧉ Copiar JSON</button>
+    <button id="btnTuneReset" data-link class="flex-1 min-w-[120px] font-mono text-[.56rem] tracking-[.25em] uppercase text-bone bg-transparent border border-hairline py-3 px-2 transition-colors hover:bg-sand hover:text-night hover:border-sand cursor-none">↺ Reset</button>
+  </div>
+  <p class="text-[.5rem] tracking-[.1em] text-dust/70 leading-[1.8] mt-4">«Copiar JSON» exporta los valores actuales para fijarlos en el código.</p>
 </aside>
 
 <!-- ============ TIMELINE PANEL (intro cinematic) ============ -->
@@ -289,6 +305,34 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   renderer.toneMapping = NOFOG ? THREE.ACESFilmicToneMapping : THREE.NoToneMapping;
   renderer.toneMappingExposure = 1.05;
 
+  /* ============================================================
+     TUNE — live tuning registry for the "Ajustes" panel.
+     TUNE: JS-side multipliers read every frame (defaults = shipped look).
+     TUNEU/GNDU: shared uniform objects, assigned into the block/ground
+     shaders at compile time so sliders work before AND after compile.
+  ============================================================ */
+  const TUNE = {
+    defLayer: 1, defJitter: 1, defYaw: 1, defTilt: 1, defScale: 1, defShrink: 1,
+    wind: 1, stormO: 1, stormPeak: 1.6, grainO: 0.4,
+    jSpeed: 1, jDamp: 3.5,
+    prismEmis: 2.2, prismHalo: 0.16
+  };
+  const TUNEU = {
+    uCropU:     { value: 0.5 },  uCropV:      { value: 0.18 },
+    uDispAmp:   { value: 0.04 },
+    uLmMix:     { value: 0.45 }, uLmGain:     { value: 1.45 },
+    uAoMix:     { value: 0.38 },
+    uJointW:    { value: 0.055 }, uJointDark: { value: 0.22 },
+    uCarveK:    { value: 0.20 }, uCarveRelief:{ value: 0.55 },
+    uSandK:     { value: 0.42 }, uDetailN:    { value: 0.35 },
+    uRoughVar:  { value: 1.0 }
+  };
+  const GNDU = {
+    uGLmMix:    { value: 0.62 },
+    uRippleK:   { value: 0.5 }, uRippleFreq: { value: 3.6 },
+    uRippleFade:{ value: 85 }
+  };
+
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0a0806);
   scene.fog = new THREE.FogExp2(0x121009, 0.0026);
@@ -296,8 +340,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 900);
 
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
-  scene.add(new THREE.AmbientLight(0x3a2f24, 1.0));
-  scene.add(new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55));
+  const ambLight = new THREE.AmbientLight(0x3a2f24, 1.0);
+  scene.add(ambLight);
+  const hemiLight = new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55);
+  scene.add(hemiLight);
   /* D1: key from upper-right, matching the baked rig in tools/blender-bake.py
      (blender (48,-30,26) -> three (48,26,30)) so runtime speculars/normal maps
      agree with the lightmap shadows */
@@ -575,6 +621,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     ground.material.onBeforeCompile = shader => {
       prevOBC(shader);  // chain reveal first
       shader.uniforms.uTerrainLm = { value: terrainLmTex };
+      Object.assign(shader.uniforms, GNDU);   // live tune panel uniforms
       shader.vertexShader = shader.vertexShader
         .replace('#include <common>', `#include <common>
           varying vec2 vTerrainLmUv;`)
@@ -583,6 +630,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       shader.fragmentShader = shader.fragmentShader
         .replace('#include <common>', `#include <common>
           uniform sampler2D uTerrainLm;
+          uniform float uGLmMix;
+          uniform float uRippleK;
+          uniform float uRippleFreq;
+          uniform float uRippleFade;
           varying vec2 vTerrainLmUv;
           float _thash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
           float _tnoise(vec2 p){
@@ -600,7 +651,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
             // desaturate the baked lightmap toward luminance: keep shading, drop the orange cast
             float _tlum = dot(_tlm, vec3(0.299, 0.587, 0.114));
             _tlm = mix(vec3(_tlum), _tlm, 0.45);
-            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.25, 0.62);
+            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.25, uGLmMix);
           }`)
         .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
           {
@@ -608,15 +659,15 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
                heightfield -> screen-space derivative normal (same trick as
                the block detail normal); fades out past ~85wu so the
                mid/far dunes keep their smooth baked read. */
-            float _fade = 1.0 - smoothstep(28.0, 85.0, length(vViewPosition));
+            float _fade = 1.0 - smoothstep(28.0, max(uRippleFade, 30.0), length(vViewPosition));
             if (_fade > 0.001) {
               float _wob = _tnoise(vRevealW.xz * 0.9);
               /* ripple crests roughly perpendicular to the wind (+x) */
-              float _rip = sin(vRevealW.x * 3.6 + _wob * 5.5 + vRevealW.z * 0.4) * 0.5 + 0.5;
+              float _rip = sin(vRevealW.x * uRippleFreq + _wob * 5.5 + vRevealW.z * 0.4) * 0.5 + 0.5;
               float _gr = _tnoise(vRevealW.xz * 9.0) * 0.6 + _tnoise(vRevealW.xz * 23.0) * 0.4;
               float _h = _rip * 0.6 + _gr * 0.4;
               vec3 _dN = normalize(vec3(dFdx(_h) * 6.0, dFdy(_h) * 6.0, 1.0));
-              normal = normalize(normal + _dN * (0.5 * _fade));
+              normal = normalize(normal + _dN * (uRippleK * _fade));
             }
           }`);
     };
@@ -761,6 +812,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* ---- weathering pass (Phase 4): per-layer row offset, per-block jitter, erosion.
      Separate PRNG stream so existing animation randoms stay stable.
      MUST stay in exact sync with tools/export-pyramid-glb.mjs ---- */
+  let applyWeathering;
   {
     let _s2 = (PYRA_SEED ^ 0x9E3779B9) | 0;
     const rnd2 = () => {
@@ -776,28 +828,27 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       layerDX.push((rnd2() - 0.5) * 0.22);
       layerDZ.push((rnd2() - 0.5) * 0.22);
     }
-    const _e = new THREE.Euler(), _jq = new THREE.Quaternion();
+    /* Raw draws stored per block (B.w) — the PRNG call ORDER below is
+       byte-identical to tools/export-pyramid-glb.mjs, so the default look and
+       the survivor/atlas mapping never change. applyWeathering() rescales the
+       stored raws with the TUNE multipliers live (tune panel); erosion
+       probability itself stays fixed (a re-roll would re-splice survivors and
+       desync the baked lightmap atlas). */
+    const _e = new THREE.Euler();
     for (let bi = 0; bi < blocks.length; bi++) {
       const B = blocks[bi];
       const j = B.layer, count = B.count, a = B.ia, b = B.ib;
-      /* row offset */
-      B.jx = B.home.x + layerDX[j];
-      B.jz = B.home.z + layerDZ[j];
-      B.jy = B.home.y;
-      /* positional jitter */
-      B.jx += (rnd2() - 0.5) * 0.08;
-      B.jz += (rnd2() - 0.5) * 0.08;
-      B.jy += (rnd2() - 0.5) * 0.05;
-      /* orientation jitter: yaw dominant + slight tilt */
-      const yaw = (rnd2() - 0.5) * 0.045;
-      const tiltX = (rnd2() - 0.5) * 0.03;
-      const tiltZ = (rnd2() - 0.5) * 0.03;
-      _e.set(tiltX, yaw, tiltZ, 'YXZ');
-      B.jquat = new THREE.Quaternion().setFromEuler(_e);
-      /* scale jitter */
-      const su = 0.965 + rnd2() * 0.05;
-      const sy = 0.97 + rnd2() * 0.05;
-      B.jsx = su; B.jsy = sy; B.jsz = su;
+      B.w = {
+        jx: (rnd2() - 0.5) * 0.08,
+        jz: (rnd2() - 0.5) * 0.08,
+        jy: (rnd2() - 0.5) * 0.05,
+        yaw: (rnd2() - 0.5) * 0.045,
+        tiltX: (rnd2() - 0.5) * 0.03,
+        tiltZ: (rnd2() - 0.5) * 0.03,
+        su: 0.965 + rnd2() * 0.05,
+        sy: 0.97 + rnd2() * 0.05,
+        shrink: 1
+      };
       /* seed for shader displacement + tone */
       B.seed = rnd2();
       /* erosion: chips on corners/edges of upper layers (subtle, not half-blocks) */
@@ -806,14 +857,30 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       const r = rnd2();
       if (j >= 1 && isCorner) {
         if (r < 0.10) B.eroded = true;
-        else if (r < 0.35) B.shrinkF = 0.84 + rnd2() * 0.10;
+        else if (r < 0.35) B.w.shrink = 0.84 + rnd2() * 0.10;
       } else if (j >= 2 && isEdge) {
         if (r < 0.03) B.eroded = true;
-        else if (r < 0.12) B.shrinkF = 0.88 + rnd2() * 0.08;
+        else if (r < 0.12) B.w.shrink = 0.88 + rnd2() * 0.08;
       }
+      B.jquat = new THREE.Quaternion();
     }
     /* remove eroded blocks (exporter mirrors this exact filter) */
     for (let bi = blocks.length - 1; bi >= 0; bi--) if (blocks[bi].eroded) blocks.splice(bi, 1);
+    applyWeathering = function () {
+      const T = TUNE;
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const B = blocks[bi], j = B.layer, w = B.w;
+        B.jx = B.home.x + layerDX[j] * T.defLayer + w.jx * T.defJitter;
+        B.jz = B.home.z + layerDZ[j] * T.defLayer + w.jz * T.defJitter;
+        B.jy = B.home.y + w.jy * T.defJitter;
+        _e.set(w.tiltX * T.defTilt, w.yaw * T.defYaw, w.tiltZ * T.defTilt, 'YXZ');
+        B.jquat.setFromEuler(_e);
+        B.jsx = B.jsz = 1 + (w.su - 1) * T.defScale;
+        B.jsy = 1 + (w.sy - 1) * T.defScale;
+        B.shrinkF = 1 + (w.shrink - 1) * T.defShrink;
+      }
+    };
+    applyWeathering();
   }
   const BS_XZ = CELL_XZ * 0.998, BS_Y = CELL_Y * 0.998;
 
@@ -838,12 +905,16 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     sh.uniforms.uLightmap = { value: pyraLightmapTex };
     sh.uniforms.uSandTex = { value: sandColorTexPBR };
     sh.uniforms.uAoTex = { value: stoneAoTex };
+    Object.assign(sh.uniforms, TUNEU);   // live tune panel uniforms
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute vec4 aVar;
         attribute vec2 aUvTile;
         attribute float aSeed;
         attribute vec2 aFaceUv;
+        uniform float uCropU;
+        uniform float uCropV;
+        uniform float uDispAmp;
         varying float vSeed;
         varying vec2 vFaceUv;
         varying vec4 vVar;
@@ -865,7 +936,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           vec2 _r = vec2(_c * _uvC.x - _s * _uvC.y, _s * _uvC.x + _c * _uvC.y) + 0.5;
           /* wide crop ~ one masonry course per face — full-window sampling
              made every block display the entire wall pattern */
-          vVarUv = _r * vec2(0.5, 0.18) * (0.85 + aVar.w * 0.35) + aVar.xy;
+          vVarUv = _r * vec2(uCropU, uCropV) * (0.85 + aVar.w * 0.35) + aVar.xy;
         }
         /* erosion displacement: radial from block center, position-keyed (continuous
            across face corners). MUST match exporter's bake geometry. */
@@ -876,7 +947,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           float _h1 = fract(sin(dot(_np, vec3(127.1, 311.7, 74.7))) * 43758.5453);
           float _h2 = fract(sin(dot(_np + 0.5, vec3(269.5, 183.3, 246.1))) * 28001.8384);
           float _n = (_h1 + _h2) * 0.5;
-          transformed += _dir * ((_n - 0.45) * 0.04);
+          transformed += _dir * ((_n - 0.45) * uDispAmp);
         }
         vec4 _wp = vec4(transformed, 1.0);
         #ifdef USE_INSTANCING
@@ -901,6 +972,16 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         uniform sampler2D uLightmap;
         uniform sampler2D uSandTex;
         uniform sampler2D uAoTex;
+        uniform float uLmMix;
+        uniform float uLmGain;
+        uniform float uAoMix;
+        uniform float uJointW;
+        uniform float uJointDark;
+        uniform float uCarveK;
+        uniform float uCarveRelief;
+        uniform float uSandK;
+        uniform float uDetailN;
+        uniform float uRoughVar;
         float _hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
         float _noise(vec2 p){
           vec2 i = floor(p), f = fract(p);
@@ -939,21 +1020,21 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         vec4 sampledDiffuseColor = texture2D( map, vVarUv );
         diffuseColor *= sampledDiffuseColor;
         /* scanned AO map modulates albedo */
-        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, 0.38);
+        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, uAoMix);
         /* Phase 2: baked lightmap — warm sandstone bake w/ directional shading + AO */
         {
           vec3 _lm = texture2D( uLightmap, vec2(vLmUv.x, 1.0 - vLmUv.y) ).rgb;
           /* per-block macro tone variation (subtle, seed-keyed) */
           float _tone = 0.88 + 0.24 * fract(vSeed * 7.13);
           _lm *= _tone;
-          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 1.45, 0.45);
+          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * uLmGain, uLmMix);
         }
         /* masonry joints: dark gap at face border + slight edge-wear lightening */
         {
           float _bd = min(min(vFaceUv.x, 1.0 - vFaceUv.x), min(vFaceUv.y, 1.0 - vFaceUv.y));
-          float _gap = 1.0 - smoothstep(0.0, 0.055, _bd);
+          float _gap = 1.0 - smoothstep(0.0, max(uJointW, 0.0001), _bd);
           float _wear = smoothstep(0.16, 0.045, _bd) * (1.0 - _gap);
-          diffuseColor.rgb *= 1.0 - _gap * 0.22;
+          diffuseColor.rgb *= 1.0 - _gap * uJointDark;
           diffuseColor.rgb += _wear * 0.045 * vec3(1.0, 0.94, 0.82);
         }
         /* carved inscriptions on side faces: seed-keyed glyph grid, worn by noise */
@@ -967,14 +1048,14 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           float _wearM = smoothstep(0.28, 0.55, _wearN);                          /* patches worn smooth */
           float _blockM = step(0.25, fract(vSeed * 3.71));                        /* ~75% of blocks inscribed */
           _carveG = _carveField(vFaceUv, vSeed) * _sideM * _edgeM * _wearM * _blockM;
-          diffuseColor.rgb *= 1.0 - _carveG * 0.20;                               /* carve shadow */
+          diffuseColor.rgb *= 1.0 - _carveG * uCarveK;                            /* carve shadow */
         }
         /* sand accumulation on upward-facing surfaces */
         {
           vec3 _wN = normalize(vWNormal);
           float _up = smoothstep(0.35, 0.85, _wN.y);
           float _sn = _noise(vWPos.xz * 1.7) * 0.6 + _noise(vWPos.xz * 6.3) * 0.4;
-          float _sandAmt = _up * smoothstep(0.38, 0.70, _sn) * 0.42;
+          float _sandAmt = _up * smoothstep(0.38, 0.70, _sn) * uSandK;
           vec3 _sand = texture2D( uSandTex, vWPos.xz * 0.11 ).rgb;
           diffuseColor.rgb = mix(diffuseColor.rgb, _sand * 0.55, _sandAmt);
         }
@@ -990,7 +1071,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         {
           float _rn = _noise(vWPos.xz * 2.1 + vVar.xy * 40.0);
           float _rn2 = _noise(vWPos.xy * 3.3 + vVar.z * 50.0);
-          roughnessFactor = clamp(roughnessFactor * (0.78 + _rn * 0.5) + (_rn2 - 0.5) * 0.18, 0.35, 1.0);
+          roughnessFactor = clamp(roughnessFactor * (1.0 + (_rn * 0.5 - 0.22) * uRoughVar) + (_rn2 - 0.5) * 0.18 * uRoughVar, 0.35, 1.0);
         }`)
       /* detail normal + micro AO + per-block tone variation.
          Expanded r128 tangent-space path so the normal map samples vVarUv */
@@ -1002,10 +1083,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
           /* high-freq detail normal from world-space noise */
           float _dn = _noise(vWPos.xz * 9.0) * 0.5 + _noise(vWPos.xz * 27.0) * 0.5;
           vec3 _detailN = normalize(vec3(dFdx(_dn) * 8.0, dFdy(_dn) * 8.0, 1.0));
-          normal = normalize(normal + _detailN * 0.35);
+          normal = normalize(normal + _detailN * uDetailN);
           /* carved glyph relief: emboss from screen-space carve gradient */
           vec3 _carveN = normalize(vec3(dFdx(_carveG) * 5.0, dFdy(_carveG) * 5.0, 1.0));
-          normal = normalize(normal + _carveN * 0.55);
+          normal = normalize(normal + _carveN * uCarveRelief);
         }`)
       .replace('#include <aomap_fragment>', `#include <aomap_fragment>
         {
@@ -2211,16 +2292,16 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   /* storm bell around chapter 3 (p≈0.5): wind + sand ramp up mid-journey */
   function stormBoost() {
     const p = jState.cur;
-    return 1 + 1.6 * THREE.MathUtils.smoothstep(p, 0.32, 0.50)
+    return 1 + TUNE.stormPeak * THREE.MathUtils.smoothstep(p, 0.32, 0.50)
                    * (1 - THREE.MathUtils.smoothstep(p, 0.60, 0.78));
   }
 
   /* ---- input: wheel / touch / keys → target progress ---- */
   const J_WHEEL = 0.00042, J_TOUCH = 0.0016, J_KEY = 0.12;
-  const inPanel = el => el && el.closest && el.closest('#editorPanel, #timelinePanel');
+  const inPanel = el => el && el.closest && el.closest('#editorPanel, #timelinePanel, #tunePanel');
   function jNudge(d) {
     if (!state.introDone || tl.open) return;
-    jState.tgt = THREE.MathUtils.clamp(jState.tgt + d, 0, 1);
+    jState.tgt = THREE.MathUtils.clamp(jState.tgt + d * TUNE.jSpeed, 0, 1);
     jState.moved = true;
   }
   window.addEventListener('wheel', e => {
@@ -2316,6 +2397,142 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     setTimeout(() => { e.target.textContent = '⧉ Copiar config'; }, 1600);
   });
   bindLinkCursor(panel);
+
+  /* ============================================================
+     TUNE PANEL — "Ajustes": every scene parameter, live, described.
+     Rows are generated from TUNE_DEFS; each row = slider (or color)
+     + short Spanish description of what it does.
+  ============================================================ */
+  const tunePanel = document.getElementById('tunePanel');
+  document.getElementById('tuneToggle').addEventListener('click', () => {
+    tunePanel.classList.toggle('-translate-x-[105%]');
+  });
+  const _uSet = (u, fn) => v => { u.value = v; if (fn) fn(v); };
+  const TUNE_DEFS = [
+    { title: 'Pirámide · deformidad',
+      note: 'Recalcula los bloques en vivo. Mucho desorden desalinea las sombras horneadas (solo vista editor).',
+      rows: [
+        { id: 'defLayer',  l: 'Desfase hiladas', d: 'Cuánto se corre lateralmente cada fila de bloques.', min: 0, max: 4, step: 0.05, get: () => TUNE.defLayer, set: v => { TUNE.defLayer = v; applyWeathering(); } },
+        { id: 'defJitter', l: 'Jitter posición', d: 'Desorden aleatorio de la posición de cada bloque.', min: 0, max: 5, step: 0.05, get: () => TUNE.defJitter, set: v => { TUNE.defJitter = v; applyWeathering(); } },
+        { id: 'defYaw',    l: 'Giro bloques', d: 'Rotación aleatoria de cada bloque sobre su eje vertical.', min: 0, max: 8, step: 0.1, get: () => TUNE.defYaw, set: v => { TUNE.defYaw = v; applyWeathering(); } },
+        { id: 'defTilt',   l: 'Inclinación', d: 'Ladeo aleatorio de los bloques (ruina vs. sillería).', min: 0, max: 8, step: 0.1, get: () => TUNE.defTilt, set: v => { TUNE.defTilt = v; applyWeathering(); } },
+        { id: 'defScale',  l: 'Variación tamaño', d: 'Diferencia de escala entre bloques vecinos.', min: 0, max: 5, step: 0.05, get: () => TUNE.defScale, set: v => { TUNE.defScale = v; applyWeathering(); } },
+        { id: 'defShrink', l: 'Erosión (chips)', d: 'Encogido de los bloques dañados en esquinas y bordes.', min: 0, max: 3, step: 0.05, get: () => TUNE.defShrink, set: v => { TUNE.defShrink = v; applyWeathering(); } },
+        { id: 'dispAmp',   l: 'Rugosidad malla', d: 'Deformación de la superficie de cada bloque (piedra comida).', min: 0, max: 0.25, step: 0.005, get: () => TUNEU.uDispAmp.value, set: _uSet(TUNEU.uDispAmp) }
+      ] },
+    { title: 'Bloques · textura', rows: [
+        { id: 'cropU',    l: 'Escala textura U', d: 'Ancho del recorte de piedra por bloque (menos = zoom).', min: 0.05, max: 1.5, step: 0.01, get: () => TUNEU.uCropU.value, set: _uSet(TUNEU.uCropU) },
+        { id: 'cropV',    l: 'Escala textura V', d: 'Alto del recorte — controla las hiladas visibles.', min: 0.05, max: 1.5, step: 0.01, get: () => TUNEU.uCropV.value, set: _uSet(TUNEU.uCropV) },
+        { id: 'blkNormal',l: 'Relieve piedra', d: 'Fuerza del normal map escaneado (microrrelieve).', min: 0, max: 4, step: 0.05, get: () => blockMat.normalScale.x, set: v => blockMat.normalScale.set(v, v) },
+        { id: 'detailN',  l: 'Detalle fino', d: 'Micro-rugosidad procedural extra sobre la piedra.', min: 0, max: 1.5, step: 0.05, get: () => TUNEU.uDetailN.value, set: _uSet(TUNEU.uDetailN) },
+        { id: 'blkRough', l: 'Rugosidad base', d: 'Qué tan mate es la piedra (1 = sin brillo).', min: 0, max: 1, step: 0.01, get: () => blockMat.roughness, set: v => { blockMat.roughness = v; } },
+        { id: 'roughVar', l: 'Variación brillo', d: 'Manchas mate/brillo por zonas (ruido).', min: 0, max: 2, step: 0.05, get: () => TUNEU.uRoughVar.value, set: _uSet(TUNEU.uRoughVar) },
+        { id: 'aoMix',    l: 'Oclusión (AO)', d: 'Sombreado de recovecos del escaneo de piedra.', min: 0, max: 1, step: 0.02, get: () => TUNEU.uAoMix.value, set: _uSet(TUNEU.uAoMix) },
+        { id: 'jointW',   l: 'Junta grosor', d: 'Ancho de la separación oscura entre sillares.', min: 0, max: 0.2, step: 0.005, get: () => TUNEU.uJointW.value, set: _uSet(TUNEU.uJointW) },
+        { id: 'jointDark',l: 'Junta oscuridad', d: 'Cuánto se oscurece la junta entre bloques.', min: 0, max: 1, step: 0.02, get: () => TUNEU.uJointDark.value, set: _uSet(TUNEU.uJointDark) },
+        { id: 'carveK',   l: 'Glifos sombra', d: 'Profundidad visual de las inscripciones talladas.', min: 0, max: 1, step: 0.02, get: () => TUNEU.uCarveK.value, set: _uSet(TUNEU.uCarveK) },
+        { id: 'carveRel', l: 'Glifos relieve', d: 'Emboss 3D de las inscripciones.', min: 0, max: 2, step: 0.05, get: () => TUNEU.uCarveRelief.value, set: _uSet(TUNEU.uCarveRelief) },
+        { id: 'sandK',    l: 'Arena acumulada', d: 'Arena depositada sobre las caras superiores.', min: 0, max: 1, step: 0.02, get: () => TUNEU.uSandK.value, set: _uSet(TUNEU.uSandK) },
+        { id: 'lmMix',    l: 'Lightmap mezcla', d: 'Peso de la iluminación horneada (sombras Blender).', min: 0, max: 1, step: 0.02, get: () => TUNEU.uLmMix.value, set: _uSet(TUNEU.uLmMix) },
+        { id: 'lmGain',   l: 'Lightmap brillo', d: 'Ganancia del horneado — sube o baja la piedra iluminada.', min: 0.5, max: 3, step: 0.05, get: () => TUNEU.uLmGain.value, set: _uSet(TUNEU.uLmGain) },
+        { id: 'blkEnv',   l: 'Reflejo ambiente', d: 'Relleno IBL del cielo nocturno sobre la piedra.', min: 0, max: 2, step: 0.05, get: () => blockMat.envMapIntensity, set: v => { blockMat.envMapIntensity = v; } },
+        { id: 'blkColor', l: 'Tinte piedra', d: 'Color multiplicador de la piedra.', type: 'color', get: () => '#' + blockMat.color.getHexString(), set: v => blockMat.color.set(v) }
+      ] },
+    { title: 'Suelo', rows: [
+        { id: 'gndLmMix', l: 'Sombras terreno', d: 'Peso del lightmap horneado del desierto (dunas + sombra pirámide).', min: 0, max: 1, step: 0.02, get: () => GNDU.uGLmMix.value, set: _uSet(GNDU.uGLmMix) },
+        { id: 'rippleK',  l: 'Ondas viento', d: 'Fuerza del rizado de arena cerca de cámara.', min: 0, max: 1.5, step: 0.05, get: () => GNDU.uRippleK.value, set: _uSet(GNDU.uRippleK) },
+        { id: 'rippleF',  l: 'Ondas frecuencia', d: 'Densidad de crestas del rizado.', min: 0.5, max: 12, step: 0.1, get: () => GNDU.uRippleFreq.value, set: _uSet(GNDU.uRippleFreq) },
+        { id: 'rippleD',  l: 'Ondas alcance', d: 'Distancia a la que el rizado se desvanece.', min: 30, max: 300, step: 5, get: () => GNDU.uRippleFade.value, set: _uSet(GNDU.uRippleFade) },
+        { id: 'gndNormal',l: 'Relieve arena', d: 'Fuerza del normal map de la arena.', min: 0, max: 3, step: 0.05, get: () => ground.material.normalScale.x, set: v => ground.material.normalScale.set(v, v) },
+        { id: 'sandRep',  l: 'Escala tex. arena', d: 'Repeticiones del tile de arena (más = grano fino).', min: 4, max: 60, step: 1, get: () => sandColorTexPBR.repeat.x, set: v => { sandColorTexPBR.repeat.set(v, v); sandNormalTexPBR.repeat.set(v, v); } },
+        { id: 'gndRough', l: 'Rugosidad arena', d: 'Qué tan mate es la arena.', min: 0, max: 1, step: 0.01, get: () => ground.material.roughness, set: v => { ground.material.roughness = v; } },
+        { id: 'gndEnv',   l: 'Reflejo arena', d: 'Relleno IBL sobre la arena (alto = dunas plateadas).', min: 0, max: 1.5, step: 0.05, get: () => ground.material.envMapIntensity, set: v => { ground.material.envMapIntensity = v; } },
+        { id: 'gndColor', l: 'Tinte arena', d: 'Color multiplicador de la arena.', type: 'color', get: () => '#' + ground.material.color.getHexString(), set: v => ground.material.color.set(v) }
+      ] },
+    { title: 'Iluminación', rows: [
+        { id: 'ambI',  l: 'Ambiente', d: 'Luz base uniforme de toda la escena.', min: 0, max: 3, step: 0.05, get: () => ambLight.intensity, set: v => { ambLight.intensity = v; } },
+        { id: 'hemiI', l: 'Hemisférica', d: 'Gradiente cielo/suelo (relleno direccional suave).', min: 0, max: 2, step: 0.05, get: () => hemiLight.intensity, set: v => { hemiLight.intensity = v; } },
+        { id: 'keyI',  l: 'Luz principal', d: 'Intensidad del sol/luna clave. Su posición está casada con el horneado.', min: 0, max: 3, step: 0.05, get: () => keyLight.intensity, set: v => { keyLight.intensity = v; } },
+        { id: 'moonI', l: 'Luz lunar', d: 'Relleno frío desde el lado opuesto.', min: 0, max: 1.5, step: 0.02, get: () => moonLight.intensity, set: v => { moonLight.intensity = v; } },
+        { id: 'expo',  l: 'Exposición', d: 'Exposición global del render (post-proceso).', min: 0.05, max: 1.2, step: 0.01, get: () => volUniforms.uExposure.value, set: v => { volUniforms.uExposure.value = v; } }
+      ] },
+    { title: 'Prisma', rows: [
+        { id: 'prLight', l: 'Luz prisma', d: 'Luz puntual cálida que el prisma proyecta.', min: 0, max: 40, step: 0.5, get: () => tetraLight.intensity, set: v => { tetraLight.intensity = v; } },
+        { id: 'prEmis',  l: 'Brillo emisivo', d: 'Intensidad del material del prisma.', min: 0, max: 8, step: 0.1, get: () => TUNE.prismEmis, set: v => { TUNE.prismEmis = v; } },
+        { id: 'prGlow',  l: 'Glow', d: 'Sprite de resplandor pegado al prisma.', min: 0, max: 1, step: 0.02, get: () => tetraGlow.material.opacity, set: v => { tetraGlow.material.opacity = v; } },
+        { id: 'prHalo',  l: 'Halo amplio', d: 'Halo ancho tipo bloom alrededor del prisma.', min: 0, max: 0.8, step: 0.01, get: () => TUNE.prismHalo, set: v => { TUNE.prismHalo = v; } }
+      ] },
+    { title: 'Tormenta de arena', rows: [
+        { id: 'wind',      l: 'Viento', d: 'Velocidad global de toda la arena en movimiento.', min: 0, max: 4, step: 0.05, get: () => TUNE.wind, set: v => { TUNE.wind = v; } },
+        { id: 'stormO',    l: 'Densidad', d: 'Opacidad de velos, láminas y ráfagas de polvo.', min: 0, max: 3, step: 0.05, get: () => TUNE.stormO, set: v => { TUNE.stormO = v; } },
+        { id: 'grainO',    l: 'Granos opacidad', d: 'Visibilidad de las partículas finas de arena.', min: 0, max: 1, step: 0.02, get: () => TUNE.grainO, set: v => { TUNE.grainO = v; } },
+        { id: 'grainSize', l: 'Granos tamaño', d: 'Tamaño de cada partícula de arena.', min: 0.01, max: 0.3, step: 0.005, get: () => grain.material.size, set: v => { grain.material.size = v; } },
+        { id: 'stormPeak', l: 'Pico tormenta', d: 'Ráfaga máxima extra en el capítulo 3 del viaje.', min: 0, max: 4, step: 0.1, get: () => TUNE.stormPeak, set: v => { TUNE.stormPeak = v; } }
+      ] },
+    { title: 'Viaje (scroll)', rows: [
+        { id: 'jSpeed', l: 'Velocidad scroll', d: 'Sensibilidad de rueda, touch y teclas.', min: 0.2, max: 4, step: 0.05, get: () => TUNE.jSpeed, set: v => { TUNE.jSpeed = v; } },
+        { id: 'jDamp',  l: 'Suavizado cámara', d: 'Qué tan rápido la cámara alcanza el scroll (alto = seco).', min: 0.5, max: 10, step: 0.1, get: () => TUNE.jDamp, set: v => { TUNE.jDamp = v; } }
+      ] }
+  ];
+  const tuneBody = document.getElementById('tuneBody');
+  const _fmtDec = step => Math.min((String(step).split('.')[1] || '').length, 4);
+  const _tuneRows = [];
+  TUNE_DEFS.forEach(sec => {
+    const h = document.createElement('h3');
+    h.className = 'text-[.62rem] tracking-[.4em] uppercase text-sand mt-6 mb-3 first:mt-0';
+    h.textContent = sec.title;
+    tuneBody.appendChild(h);
+    if (sec.note) {
+      const p = document.createElement('p');
+      p.className = 'text-[.52rem] tracking-[.08em] text-dust/80 leading-[1.8] mb-3';
+      p.textContent = sec.note;
+      tuneBody.appendChild(p);
+    }
+    sec.rows.forEach(r => {
+      r.init = r.get();
+      _tuneRows.push(r);
+      const div = document.createElement('div');
+      div.className = 'mb-3';
+      if (r.type === 'color') {
+        div.innerHTML = `<label class="flex justify-between items-center text-[.58rem] tracking-[.18em] text-dust uppercase mb-1">${r.l}<input type="color" class="w-10 h-5 bg-transparent border border-hairline p-0 cursor-none"></label>` +
+          `<p class="text-[.5rem] tracking-[.06em] text-dust/60 leading-[1.7]">${r.d}</p>`;
+        r._inp = div.querySelector('input');
+        r._inp.value = r.init;
+        r._inp.addEventListener('input', () => r.set(r._inp.value));
+      } else {
+        div.innerHTML = `<label class="flex justify-between text-[.58rem] tracking-[.18em] text-dust uppercase mb-1">${r.l} <b class="text-bone font-normal"></b></label>` +
+          `<input type="range" min="${r.min}" max="${r.max}" step="${r.step}">` +
+          `<p class="text-[.5rem] tracking-[.06em] text-dust/60 leading-[1.7] mt-0.5">${r.d}</p>`;
+        r._inp = div.querySelector('input');
+        r._val = div.querySelector('b');
+        r._inp.value = r.init;
+        r._val.textContent = (+r.init).toFixed(_fmtDec(r.step));
+        r._inp.addEventListener('input', () => {
+          const v = parseFloat(r._inp.value);
+          r.set(v);
+          r._val.textContent = v.toFixed(_fmtDec(r.step));
+        });
+      }
+      tuneBody.appendChild(div);
+    });
+  });
+  document.getElementById('btnTuneReset').addEventListener('click', () => {
+    _tuneRows.forEach(r => {
+      r.set(r.init);
+      r._inp.value = r.init;
+      if (r._val) r._val.textContent = (+r.init).toFixed(_fmtDec(r.step));
+    });
+  });
+  document.getElementById('btnTuneCopy').addEventListener('click', e => {
+    const out = {};
+    _tuneRows.forEach(r => { out[r.id] = r.type === 'color' ? r.get() : +(+r.get()).toFixed(4); });
+    const json = JSON.stringify(out, null, 2);
+    (navigator.clipboard ? navigator.clipboard.writeText(json) : Promise.reject())
+      .then(() => { e.target.textContent = '✓ Copiado'; })
+      .catch(() => { console.log(json); e.target.textContent = '→ En consola'; });
+    setTimeout(() => { e.target.textContent = '⧉ Copiar JSON'; }, 1600);
+  });
+  bindLinkCursor(tunePanel);
 
   /* ============================================================
      TIMELINE PANEL — Unity-style editor for the intro cinematic
@@ -2524,7 +2741,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       camLook.copy(introLook).lerp(finalLook, tl.head);
     } else {
       jState.cur = STILL ? jState.tgt
-        : jState.cur + (jState.tgt - jState.cur) * Math.min(1, dt * 3.5);
+        : jState.cur + (jState.tgt - jState.cur) * Math.min(1, dt * TUNE.jDamp);
       sampleJourney(jState.cur, camPos, camLook);
     }
 
@@ -2600,27 +2817,27 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
     tetra.position.y = PYR_H + 2.5 + Math.sin(t * 0.7) * 0.28;
     tetra.rotation.y = t * 0.12;
-    tetraMat.emissiveIntensity = 2.2 * (0.9 + Math.sin(t * 1.0) * 0.1);
+    tetraMat.emissiveIntensity = TUNE.prismEmis * (0.9 + Math.sin(t * 1.0) * 0.1);
     tetraGlow.position.copy(tetra.position);
     tetraHalo.position.copy(tetra.position);
-    tetraHalo.material.opacity = 0.16 * (0.85 + Math.sin(t * 1.0) * 0.15);
+    tetraHalo.material.opacity = TUNE.prismHalo * (0.85 + Math.sin(t * 1.0) * 0.15);
     tetraLight.position.copy(tetra.position);
     shaft.material.uniforms.uTime.value = t;
     volUniforms.uEnergy.value = E * 0.7 * matC;
 
     /* D2 sandstorm: billows drift, veils breathe, grain rides the wind,
        gusts accent (all fade in with the materialization) */
-    const windMul = (reduced ? 0.25 : 1) * stormBoost();
+    const windMul = (reduced ? 0.25 : 1) * stormBoost() * TUNE.wind;
     for (let i = 0; i < sandSheets.length; i++) {
       const sh = sandSheets[i];
       sh.userData.tex.offset.x -= sh.userData.speed * dt * windMul;
       sh.userData.tex.offset.y += sh.userData.speed * 0.23 * dt * windMul;
-      sh.material.opacity = sh.userData.baseO * matW;
+      sh.material.opacity = sh.userData.baseO * TUNE.stormO * matW;
     }
     for (let i = 0; i < dustVeils.length; i++) {
       const vl = dustVeils[i];
       vl.userData.tex.offset.x -= vl.userData.speed * dt * windMul;
-      vl.material.opacity = vl.userData.baseO *
+      vl.material.opacity = vl.userData.baseO * TUNE.stormO *
         (0.85 + 0.15 * Math.sin(t * 0.23 + i * 2.1)) * matW;
     }
     const gp = grain.geometry.attributes.position.array;
@@ -2634,7 +2851,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       }
     }
     grain.geometry.attributes.position.needsUpdate = true;
-    grain.material.opacity = 0.4 * matW;
+    grain.material.opacity = TUNE.grainO * matW;
     for (let i = 0; i < streaks.length; i++) {
       const sp = streaks[i], u = sp.userData;
       sp.position.x += u.vx * dt * windMul;
@@ -2644,7 +2861,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
         sp.position.z = WZ.min + Math.random() * (WZ.max - WZ.min);
         sp.position.y = 0.3 + Math.random() * 1.7 + Math.max(0, duneH(sp.position.x, sp.position.z));
       }
-      sp.material.opacity = u.baseO * (0.6 + 0.4 * Math.sin(t * 2.2 + u.sway * 3)) * matW;
+      sp.material.opacity = u.baseO * TUNE.stormO * (0.6 + 0.4 * Math.sin(t * 2.2 + u.sway * 3)) * matW;
     }
 
     drawWave(t);
