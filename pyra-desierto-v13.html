@@ -177,9 +177,20 @@
   <p class="text-[.52rem] tracking-[.12em] text-dust leading-[1.7] mt-2">Arrastra los ◆ para mover keyframes en el tiempo · clic en un ◆ para editar su posición X/Y/Z · arrastra el borde dorado para alargar/achicar la duración · clic/arrastra en el clip para hacer scrub con la cámara.</p>
 </section>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
-<script>
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/addons/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { KTX2Loader } from 'three/addons/loaders/KTX2Loader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+
 (() => {
   const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const isMobile = innerWidth < 700;
@@ -229,15 +240,15 @@
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
   const scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x121110);
-  scene.fog = new THREE.FogExp2(0x1a1815, 0.005);
+  scene.background = new THREE.Color(0x0a0806);
+  scene.fog = new THREE.FogExp2(0x0f0c08, 0.0028);
 
   const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 900);
 
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
-  scene.add(new THREE.AmbientLight(0x262220, 1.4));
-  scene.add(new THREE.HemisphereLight(0x2b2b33, 0x37322a, 0.6));
-  const keyLight = new THREE.DirectionalLight(0xcfc7b8, 1.0);
+  scene.add(new THREE.AmbientLight(0x3a2f24, 1.1));
+  scene.add(new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55));
+  const keyLight = new THREE.DirectionalLight(0xf0dcb8, 1.15);
   keyLight.position.set(-38, 46, 34);
   keyLight.castShadow = true;
   keyLight.shadow.mapSize.set(2048, 2048);
@@ -246,7 +257,7 @@
   keyLight.shadow.camera.near = 1;   keyLight.shadow.camera.far = 220;
   keyLight.shadow.bias = -0.0006;
   scene.add(keyLight);
-  const moonLight = new THREE.DirectionalLight(0xaab4cc, 0.35);
+  const moonLight = new THREE.DirectionalLight(0xb0a890, 0.22);
   moonLight.position.set(40, 60, 30);
   scene.add(moonLight);
 
@@ -390,6 +401,68 @@
     );
     return mounds + Math.max(0, mounds) * 0.4 + hills + mountains;
   };
+  
+  /* ---- texture manager (igloo-style modes, KTX2-capable) ---- */
+  const ktx2Loader = new KTX2Loader()
+    .setTranscoderPath('./vendor/three/libs/basis/')
+    .detectSupport(renderer);
+  const dracoLoader = new DRACOLoader()
+    .setDecoderPath('./vendor/three/libs/draco/');
+  const texLoader = new THREE.TextureLoader();
+  const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+  /**
+   * loadTex(url, mode)
+   * mode tokens (igloo-style, space separated):
+   *   "srgb"       -> texture.encoding = sRGBEncoding (r128 API)
+   *   "repeat"     -> RepeatWrapping both axes (default: ClampToEdge)
+   *   "repeat=N"   -> also set repeat N x N (uv tiling factor)
+   *   "nearest"    -> NearestFilter, no mipmaps (data/pixel-art)
+   *   "mirror"     -> MirroredRepeatWrapping
+   *   "nomipmaps"  -> no mipmap generation
+   * .ktx2 files route through KTX2Loader (GPU-native compression);
+   * everything else through TextureLoader.
+   */
+  function loadTex(url, mode = "") {
+    const has = (tok) => mode.split(/\s+/).some(t => t === tok || t.startsWith(tok + "="));
+    const opt = (tok, dflt) => {
+      const t = mode.split(/\s+/).find(t => t.startsWith(tok + "="));
+      return t ? t.split("=")[1] : dflt;
+    };
+    const isKtx2 = /\.ktx2$/i.test(url);
+    const tex = isKtx2 ? ktx2Loader.load(url) : texLoader.load(url);
+
+    if (has("srgb")) tex.encoding = THREE.sRGBEncoding;   // r128 API (was silently broken before)
+    if (has("repeat")) {
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      const r = parseFloat(opt("repeat", "1"));
+      if (r !== 1) tex.repeat.set(r, r);
+    } else if (has("mirror")) {
+      tex.wrapS = tex.wrapT = THREE.MirroredRepeatWrapping;
+    }
+    if (has("nearest")) {
+      tex.magFilter = THREE.NearestFilter;
+      tex.minFilter = THREE.NearestFilter;
+      tex.generateMipmaps = false;
+    }
+    if (has("nomipmaps")) {
+      tex.generateMipmaps = false;
+      tex.minFilter = THREE.LinearFilter;
+    }
+    if (!has("nearest")) tex.anisotropy = maxAniso;
+    return tex;
+  }
+
+  // debug handle for QA
+  window.__pyraTex = { ktx2Loader, dracoLoader, loadTex };
+  const stoneColorTex = loadTex('assets/tex-ktx2/stone2_color.ktx2', 'srgb repeat=0.8');
+  const stoneNormalTex = loadTex('assets/tex-ktx2/stone2_normal.ktx2', 'repeat=0.8');
+  const stoneRoughTex = loadTex('assets/tex-ktx2/stone2_rough.ktx2', 'repeat=0.8');
+  const stoneAoTex = loadTex('assets/tex-ktx2/stone2_ao.ktx2', 'repeat=0.8');
+  const sandColorTexPBR = loadTex('assets/tex-ktx2/sand_color.ktx2', 'srgb repeat=20');
+  const sandNormalTexPBR = loadTex('assets/tex-ktx2/sand_normal.ktx2', 'repeat=20');
+  const terrainLmTex = loadTex('assets/tex-ktx2/pyra_terrain_4k.ktx2', 'srgb');
+
   const groundGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
   groundGeo.rotateX(-Math.PI / 2);
   {
@@ -398,10 +471,33 @@
     groundGeo.computeVertexNormals();
   }
   const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
-    map: sandTex, bumpMap: sandTex, bumpScale: 0.35,
-    color: 0xc4bbaa, roughness: 1, metalness: 0
+    map: sandColorTexPBR, normalMap: sandNormalTexPBR,
+    color: 0xd4c0a0, roughness: 1.0, metalness: 0,
+    normalScale: new THREE.Vector2(1.0, 1.0)
   }));
   injectReveal(ground.material);                       // materializes as a circle
+  {
+    const prevOBC = ground.material.onBeforeCompile;
+    ground.material.onBeforeCompile = shader => {
+      prevOBC(shader);  // chain reveal first
+      shader.uniforms.uTerrainLm = { value: terrainLmTex };
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', `#include <common>
+          varying vec2 vTerrainLmUv;`)
+        .replace('#include <begin_vertex>', `#include <begin_vertex>
+          vTerrainLmUv = uv;  // planar UV: x/760+0.5, z/760+0.5`);
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', `#include <common>
+          uniform sampler2D uTerrainLm;
+          varying vec2 vTerrainLmUv;`)
+        .replace('#include <map_fragment>', `#include <map_fragment>
+          {
+            vec3 _tlm = texture2D(uTerrainLm, vTerrainLmUv).rgb;
+            // warm tint: blend baked sand color + directional shading
+            diffuseColor.rgb = mix(diffuseColor.rgb, _tlm * diffuseColor.rgb * 1.35, 0.62);
+          }`);
+    };
+  }
   ground.receiveShadow = true;
   scene.add(ground);
 
@@ -474,6 +570,15 @@
   const PYR_H = LAYERS * CELL_Y;
   const PYR_BASE = (COUNT0 * CELL_XZ) / 2;
   const UP = new THREE.Vector3(0, 1, 0);
+  /* deterministic PRNG (mulberry32) — block gen must match the Blender bake exactly */
+  const PYRA_SEED = 20260717;
+  let _rngState = PYRA_SEED;
+  function pyraRnd() {
+    _rngState |= 0; _rngState = (_rngState + 0x6D2B79F5) | 0;
+    let t = Math.imul(_rngState ^ (_rngState >>> 15), 1 | _rngState);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
   const blocks = [];
   for (let j = 0; j < LAYERS; j++) {
     const count = COUNT0 - j * 2;
@@ -491,64 +596,384 @@
           : new THREE.Vector3(0, 1, 0);
         blocks.push({
           home: new THREE.Vector3(x, y, z),
+          jx: x, jz: z, jy: y,                                       // deformed rest pos (set below)
+          layer: j, ia: a, ib: b, count,
           dir: outward,                                              // wave: radial escape
           lift: outward.clone().multiplyScalar(0.35).add(UP).normalize(), // hover: mostly upward
-          amp: 0.75 + Math.random() * 0.5,
-          floatPhase: Math.random() * Math.PI * 2,
-          floatSpeed: 0.9 + Math.random() * 0.8,
-          spinAxis: new THREE.Vector3(Math.random() - .5, 1, Math.random() - .5).normalize(),
+          amp: 0.75 + pyraRnd() * 0.5,
+          floatPhase: pyraRnd() * Math.PI * 2,
+          floatSpeed: 0.9 + pyraRnd() * 0.8,
+          spinAxis: new THREE.Vector3(pyraRnd() - .5, 1, pyraRnd() - .5).normalize(),
           isStatic: j === 0,
+          eroded: false, shrinkF: 1,
           inf: 0,
           lastDisp: 0
         });
       }
     }
   }
+
+  /* ---- weathering pass (Phase 4): per-layer row offset, per-block jitter, erosion.
+     Separate PRNG stream so existing animation randoms stay stable.
+     MUST stay in exact sync with tools/export-pyramid-glb.mjs ---- */
+  {
+    let _s2 = (PYRA_SEED ^ 0x9E3779B9) | 0;
+    const rnd2 = () => {
+      _s2 |= 0; _s2 = (_s2 + 0x6D2B79F5) | 0;
+      let t = Math.imul(_s2 ^ (_s2 >>> 15), 1 | _s2);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    /* per-layer course offsets (masonry rows are never perfectly stacked) */
+    const layerDX = [], layerDZ = [];
+    for (let j = 0; j < LAYERS; j++) {
+      layerDX.push((rnd2() - 0.5) * 0.5);
+      layerDZ.push((rnd2() - 0.5) * 0.5);
+    }
+    const _e = new THREE.Euler(), _jq = new THREE.Quaternion();
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const B = blocks[bi];
+      const j = B.layer, count = B.count, a = B.ia, b = B.ib;
+      /* row offset */
+      B.jx = B.home.x + layerDX[j];
+      B.jz = B.home.z + layerDZ[j];
+      B.jy = B.home.y;
+      /* positional jitter */
+      B.jx += (rnd2() - 0.5) * 0.18;
+      B.jz += (rnd2() - 0.5) * 0.18;
+      B.jy += (rnd2() - 0.5) * 0.10;
+      /* orientation jitter: yaw dominant + slight tilt */
+      const yaw = (rnd2() - 0.5) * 0.08;
+      const tiltX = (rnd2() - 0.5) * 0.05;
+      const tiltZ = (rnd2() - 0.5) * 0.05;
+      _e.set(tiltX, yaw, tiltZ, 'YXZ');
+      B.jquat = new THREE.Quaternion().setFromEuler(_e);
+      /* scale jitter */
+      const su = 0.93 + rnd2() * 0.14;
+      const sy = 0.95 + rnd2() * 0.10;
+      B.jsx = su; B.jsy = sy; B.jsz = su;
+      /* seed for shader displacement + tone */
+      B.seed = rnd2();
+      /* erosion: corners and exposed edges of upper layers */
+      const isCorner = (a === 0 || a === count - 1) && (b === 0 || b === count - 1);
+      const isEdge = !isCorner && (a === 0 || a === count - 1 || b === 0 || b === count - 1);
+      const r = rnd2();
+      if (j >= 1 && isCorner) {
+        if (r < 0.30) B.eroded = true;
+        else if (r < 0.60) B.shrinkF = 0.50 + rnd2() * 0.22;
+      } else if (j >= 2 && isEdge) {
+        if (r < 0.08) B.eroded = true;
+        else if (r < 0.20) B.shrinkF = 0.62 + rnd2() * 0.20;
+      }
+    }
+    /* remove eroded blocks (exporter mirrors this exact filter) */
+    for (let bi = blocks.length - 1; bi >= 0; bi--) if (blocks[bi].eroded) blocks.splice(bi, 1);
+  }
   const BS_XZ = CELL_XZ * 0.998, BS_Y = CELL_Y * 0.998;
 
+  /* Phase 2: load baked pyramid lightmap (KTX2) */
+  const pyraLightmapTex = loadTex('assets/tex-ktx2/pyra_lightmap_4k.ktx2', 'srgb');
+  pyraLightmapTex.wrapS = pyraLightmapTex.wrapT = THREE.ClampToEdgeWrapping;
+  pyraLightmapTex.minFilter = THREE.LinearMipmapLinearFilter;
+  pyraLightmapTex.magFilter = THREE.LinearFilter;
+  pyraLightmapTex.generateMipmaps = true;
+
   const blockMat = new THREE.MeshStandardMaterial({
-    map: stoneTex, bumpMap: stoneTex, bumpScale: 0.12,
-    color: 0xffffff, roughness: 0.92, metalness: 0.03
+    map: stoneColorTex, normalMap: stoneNormalTex,
+    roughnessMap: stoneRoughTex,
+    color: 0xf5e8d0, roughness: 0.95, metalness: 0.02,
+    normalScale: new THREE.Vector2(1.6, 1.6),
+    emissive: 0x30200a, emissiveIntensity: 0.12   /* reduced: lightmap provides base warmth */
   });
-  const pyramidMesh = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), blockMat, blocks.length);
+  /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
+  blockMat.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = { value: 0 };
+    sh.uniforms.uLightmap = { value: pyraLightmapTex };
+    sh.uniforms.uSandTex = { value: sandColorTexPBR };
+    sh.uniforms.uAoTex = { value: stoneAoTex };
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', `#include <common>
+        attribute vec4 aVar;
+        attribute vec2 aUvTile;
+        attribute float aSeed;
+        attribute vec2 aFaceUv;
+        varying float vSeed;
+        varying vec2 vFaceUv;
+        varying vec4 vVar;
+        varying vec3 vWPos;
+        varying vec3 vWNormal;
+        varying vec2 vVarUv;
+        varying vec2 vLmUv;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vVar = aVar;
+        vSeed = aSeed;
+        vFaceUv = aFaceUv;
+        {
+          float _c = cos(aVar.z), _s = sin(aVar.z);
+          vec2 _uvC = uv - 0.5;
+          vec2 _r = vec2(_c * _uvC.x - _s * _uvC.y, _s * _uvC.x + _c * _uvC.y) + 0.5;
+          vVarUv = _r * (0.85 + aVar.w * 0.35) + aVar.xy;
+        }
+        /* erosion displacement: radial from block center, position-keyed (continuous
+           across face corners). MUST match exporter's bake geometry. */
+        {
+          vec3 _lp = position;
+          vec3 _dir = normalize(_lp + vec3(0.0001));
+          vec3 _np = _lp * 2.6 + vec3(aSeed * 17.31, aSeed * 9.17, aSeed * 13.77);
+          float _h1 = fract(sin(dot(_np, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+          float _h2 = fract(sin(dot(_np + 0.5, vec3(269.5, 183.3, 246.1))) * 28001.8384);
+          float _n = (_h1 + _h2) * 0.5;
+          transformed += _dir * ((_n - 0.42) * 0.075);
+        }
+        vec4 _wp = vec4(transformed, 1.0);
+        #ifdef USE_INSTANCING
+          _wp = instanceMatrix * _wp;
+        #endif
+        vWPos = (modelMatrix * _wp).xyz;
+        vWNormal = normalize(mat3(modelMatrix) * objectNormal);
+        /* lightmap atlas uv: geometry uv is already tile-local (0..1 in 3x2 face grid);
+           atlas = tileOrigin + tileLocal / 13 */
+        vLmUv = aUvTile + uv / 13.0;`)
+      /* rotate + offset the UVs per instance BEFORE the map sample */
+
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec4 vVar;
+        varying vec3 vWPos;
+        varying vec3 vWNormal;
+        varying vec2 vVarUv;
+        varying vec2 vLmUv;
+        varying float vSeed;
+        varying vec2 vFaceUv;
+        uniform sampler2D uLightmap;
+        uniform sampler2D uSandTex;
+        uniform sampler2D uAoTex;
+        float _hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float _noise(vec2 p){
+          vec2 i = floor(p), f = fract(p);
+          f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(_hash(i), _hash(i + vec2(1,0)), f.x),
+                     mix(_hash(i + vec2(0,1)), _hash(i + vec2(1,1)), f.x), f.y);
+        }`)
+      /* roughness breakup: per-pixel noise varies roughness */
+      .replace('#include <map_fragment>', `
+        vec4 sampledDiffuseColor = texture2D( map, vVarUv );
+        diffuseColor *= sampledDiffuseColor;
+        /* scanned AO map modulates albedo */
+        diffuseColor.rgb *= mix(vec3(1.0), texture2D( uAoTex, vVarUv ).rgb, 0.55);
+        /* Phase 2: baked lightmap — warm sandstone bake w/ directional shading + AO */
+        {
+          vec3 _lm = texture2D( uLightmap, vec2(vLmUv.x, 1.0 - vLmUv.y) ).rgb;
+          /* per-block macro tone variation (wide, seed-keyed) */
+          float _tone = 0.80 + 0.40 * fract(vSeed * 7.13);
+          _lm *= _tone;
+          diffuseColor.rgb = mix(diffuseColor.rgb, _lm * diffuseColor.rgb * 2.1, 0.60);
+        }
+        /* masonry joints: dark gap at face border + slight edge-wear lightening */
+        {
+          float _bd = min(min(vFaceUv.x, 1.0 - vFaceUv.x), min(vFaceUv.y, 1.0 - vFaceUv.y));
+          float _gap = 1.0 - smoothstep(0.0, 0.055, _bd);
+          float _wear = smoothstep(0.16, 0.045, _bd) * (1.0 - _gap);
+          diffuseColor.rgb *= 1.0 - _gap * 0.30;
+          diffuseColor.rgb += _wear * 0.045 * vec3(1.0, 0.94, 0.82);
+        }
+        /* sand accumulation on upward-facing surfaces */
+        {
+          vec3 _wN = normalize(vWNormal);
+          float _up = smoothstep(0.35, 0.85, _wN.y);
+          float _sn = _noise(vWPos.xz * 1.7) * 0.6 + _noise(vWPos.xz * 6.3) * 0.4;
+          float _sandAmt = _up * smoothstep(0.34, 0.66, _sn) * 0.60;
+          vec3 _sand = texture2D( uSandTex, vWPos.xz * 0.11 ).rgb;
+          diffuseColor.rgb = mix(diffuseColor.rgb, _sand * 0.68, _sandAmt);
+        }
+      `)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        {
+          float _rn = _noise(vWPos.xz * 2.1 + vVar.xy * 40.0);
+          float _rn2 = _noise(vWPos.xy * 3.3 + vVar.z * 50.0);
+          roughnessFactor = clamp(roughnessFactor * (0.78 + _rn * 0.5) + (_rn2 - 0.5) * 0.18, 0.35, 1.0);
+        }`)
+      /* detail normal + micro AO + per-block tone variation */
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          /* high-freq detail normal from world-space noise */
+          float _dn = _noise(vWPos.xz * 9.0) * 0.5 + _noise(vWPos.xz * 27.0) * 0.5;
+          vec3 _detailN = normalize(vec3(dFdx(_dn) * 8.0, dFdy(_dn) * 8.0, 1.0));
+          normal = normalize(normal + _detailN * 0.35);
+        }`)
+      .replace('#include <aomap_fragment>', `#include <aomap_fragment>
+        {
+          /* contact-ish darkening in recesses via noise */
+          float _ao = _noise(vWPos.xz * 4.0 + vVar.xy * 60.0);
+          reflectedLight.indirectDiffuse *= 0.72 + _ao * 0.5;
+        }`);
+    blockMat.userData.shader = sh;
+  };
+  /* Phase 2: lightmap atlas — custom box geometry matching the Blender bake UV layout exactly.
+     Same face definitions as tools/export-pyramid-glb.mjs (positions, normals, face-local UVs),
+     with each face's UV remapped into its 3x2 tile-local sub-rect. */
+  const pyramidGeo = (() => {
+    /* subdivided box: SUB x SUB grid per face (interior verts allow erosion displacement).
+       Corner positions identical to the exporter's FACES definition. */
+    const SUB = 5; /* 5x5 verts per face -> 150 verts/block */
+    const hx = 0.5, hy = 0.5, hz = 0.5;
+    const FACES = [
+      { n: [1,0,0],  c: [[hx,-hy,-hz],[hx,hy,-hz],[hx,hy,hz],[hx,-hy,hz]] },
+      { n: [-1,0,0], c: [[-hx,-hy,hz],[-hx,hy,hz],[-hx,hy,-hz],[-hx,-hy,-hz]] },
+      { n: [0,1,0],  c: [[-hx,hy,-hz],[-hx,hy,hz],[hx,hy,hz],[hx,hy,-hz]] },
+      { n: [0,-1,0], c: [[-hx,-hy,hz],[-hx,-hy,-hz],[hx,-hy,-hz],[hx,-hy,hz]] },
+      { n: [0,0,1],  c: [[-hx,-hy,hz],[hx,-hy,hz],[hx,hy,hz],[-hx,hy,hz]] },
+      { n: [0,0,-1], c: [[hx,-hy,-hz],[-hx,-hy,-hz],[-hx,hy,-hz],[hx,hy,-hz]] },
+    ];
+    const FACE_RECT = [
+      [0/3, 0/2], [1/3, 0/2], [2/3, 0/2],
+      [0/3, 1/2], [1/3, 1/2], [2/3, 1/2]
+    ];
+    const pos = [], nrm = [], uvs = [], fuv = [], idx = [];
+    for (let f = 0; f < 6; f++) {
+      const face = FACES[f];
+      const [ru, rv] = FACE_RECT[f];
+      const base = f * SUB * SUB;
+      for (let gy = 0; gy < SUB; gy++) {
+        for (let gx = 0; gx < SUB; gx++) {
+          const u = gx / (SUB - 1), v = gy / (SUB - 1);
+          /* bilinear interpolation of the 4 corners (quad order: 00,10,11,01) */
+          const c0 = face.c[0], c1 = face.c[1], c2 = face.c[2], c3 = face.c[3];
+          for (let k = 0; k < 3; k++) {
+            pos.push(
+              c0[k] * (1 - u) * (1 - v) + c1[k] * u * (1 - v) +
+              c2[k] * u * v + c3[k] * (1 - u) * v
+            );
+          }
+          nrm.push(...face.n);
+          uvs.push(ru + u / 3, rv + v / 2);
+          fuv.push(u, v);
+        }
+      }
+      for (let gy = 0; gy < SUB - 1; gy++) {
+        for (let gx = 0; gx < SUB - 1; gx++) {
+          const i0 = base + gy * SUB + gx, i1 = i0 + 1;
+          const i2 = base + (gy + 1) * SUB + gx, i3 = i2 + 1;
+          idx.push(i0, i1, i2, i1, i3, i2);
+        }
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setAttribute('aFaceUv', new THREE.Float32BufferAttribute(fuv, 2));
+    g.setIndex(idx);
+    return g;
+  })();
+  const pyramidMesh = new THREE.InstancedMesh(pyramidGeo, blockMat, blocks.length);
   pyramidMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   pyramidMesh.castShadow = true;
   pyramidMesh.receiveShadow = true;
   scene.add(pyramidMesh);
-  /* subtle per-block tint variation for a natural quarry look */
+  /* per-block tint + per-instance texture variation attribute */
   {
     const c = new THREE.Color();
+    const varArr = new Float32Array(blocks.length * 4);
     for (let i = 0; i < blocks.length; i++) {
-      const v = 0.86 + Math.random() * 0.2;
-      c.setRGB(v, v * (0.97 + Math.random() * 0.05), v * (0.92 + Math.random() * 0.06));
+      const v = 0.86 + pyraRnd() * 0.2;
+      c.setRGB(v, v * (0.97 + pyraRnd() * 0.05), v * (0.92 + pyraRnd() * 0.06));
       pyramidMesh.setColorAt(i, c);
+      /* uv offset (2), rotation (1), scale/rough variation (1) */
+      varArr[i * 4 + 0] = pyraRnd();
+      varArr[i * 4 + 1] = pyraRnd();
+      varArr[i * 4 + 2] = (pyraRnd() - 0.5) * 0.9;   /* subtle rotation */
+      varArr[i * 4 + 3] = pyraRnd();
     }
     pyramidMesh.instanceColor.needsUpdate = true;
+    pyramidMesh.geometry.setAttribute('aVar', new THREE.InstancedBufferAttribute(varArr, 4));
+    /* per-block weathering seed (displacement + tone) */
+    const seedArr = new Float32Array(blocks.length);
+    for (let i = 0; i < blocks.length; i++) seedArr[i] = blocks[i].seed;
+    pyramidMesh.geometry.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seedArr, 1));
+    /* lightmap atlas tile offsets (col,row)/13 per instance */
+    const tileArr = new Float32Array(blocks.length * 2);
+    for (let i = 0; i < blocks.length; i++) {
+      tileArr[i * 2 + 0] = (i % 13) / 13;
+      tileArr[i * 2 + 1] = Math.floor(i / 13) / 13;
+    }
+    pyramidMesh.geometry.setAttribute('aUvTile', new THREE.InstancedBufferAttribute(tileArr, 2));
   }
   const dummy = new THREE.Object3D();
 
   /* white energy core inside — intense, clean sci-fi light */
   const core = new THREE.Mesh(
     new THREE.ConeGeometry(PYR_BASE * 0.88, PYR_H * 0.96, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
+    new THREE.MeshBasicMaterial({ color: 0xfff0d8 })
   );
   core.rotation.y = Math.PI / 4;
   core.position.y = PYR_H * 0.47;
   scene.add(core);
   const coreHalo = new THREE.Mesh(
     new THREE.ConeGeometry(PYR_BASE * 0.95, PYR_H * 1.02, 4, 1),
-    new THREE.MeshBasicMaterial({ color: 0xeef4ff, transparent: true, opacity: 0.26, blending: THREE.AdditiveBlending, depthWrite: false })
+    new THREE.MeshBasicMaterial({ color: 0xffe0b0, transparent: true, opacity: 0.24, blending: THREE.AdditiveBlending, depthWrite: false })
   );
   coreHalo.rotation.y = Math.PI / 4;
   coreHalo.position.y = PYR_H * 0.5;
   scene.add(coreHalo);
-  const coreLight = new THREE.PointLight(0xf4f8ff, 3.4, 110, 1.8);
+  const coreLight = new THREE.PointLight(0xffd0a0, 3.6, 110, 1.8);
   coreLight.position.set(0, PYR_H * 0.45, 0);
   scene.add(coreLight);
   /* second low light so the glow spills onto the sand through the base seams */
-  const coreLightLow = new THREE.PointLight(0xf4f8ff, 1.2, 46, 2);
+  const coreLightLow = new THREE.PointLight(0xffc080, 1.3, 46, 2);
   coreLightLow.position.set(0, 2.2, 0);
   scene.add(coreLightLow);
+
+  
+  /* ---- floating glowing tetrahedron ---- */
+  const tetraGeo = new THREE.CylinderGeometry(0.01, 1.2, 2.2, 3, 1, false);
+  const tetraMat = new THREE.MeshStandardMaterial({
+    color: 0xfffaf0, emissive: 0xfff5e8, emissiveIntensity: 3.0,
+    roughness: 0.2, metalness: 0.0, transparent: true, opacity: 0.97
+  });
+  const tetra = new THREE.Mesh(tetraGeo, tetraMat);
+  tetra.position.set(0, PYR_H + 2.5, 0);
+  scene.add(tetra);
+  const tetraGlowTex = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const g = c.getContext('2d');
+    const grad = g.createRadialGradient(64,64,0,64,64,64);
+    grad.addColorStop(0, 'rgba(255,245,230,0.85)');
+    grad.addColorStop(0.3, 'rgba(255,225,190,0.3)');
+    grad.addColorStop(1, 'rgba(255,200,160,0)');
+    g.fillStyle = grad; g.fillRect(0,0,128,128);
+    const tex = new THREE.CanvasTexture(c); tex.encoding = THREE.sRGBEncoding;
+    return tex;
+  })();
+  const tetraGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tetraGlowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true
+  }));
+  tetraGlow.scale.set(5.5, 5.5, 1);
+  tetraGlow.position.copy(tetra.position);
+  scene.add(tetraGlow);
+  const tetraLight = new THREE.PointLight(0xffe8cc, 22, 32, 2);
+  tetraLight.position.copy(tetra.position);
+  scene.add(tetraLight);
+  /* light shaft from tetra down to apex */
+  const shaftGeo = new THREE.ConeGeometry(1.5, PYR_H + 2.5, 32, 1, true);
+  const shaftMat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uTime: { value: 0 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `varying vec2 vUv; uniform float uTime;
+      void main(){
+        float h = vUv.y;
+        float shaft = pow(h, 2.2) * 0.20;
+        shaft *= 0.7 + 0.3 * sin(uTime * 0.5 + h * 7.0);
+        vec3 col = vec3(1.0, 0.80, 0.52) * shaft;
+        gl_FragColor = vec4(col, shaft);
+      }`
+  });
+  const shaft = new THREE.Mesh(shaftGeo, shaftMat);
+  shaft.position.y = (PYR_H + 2.5) / 2 + 1.0;
+  shaft.rotation.x = Math.PI;
+  scene.add(shaft);
 
   const proxy = new THREE.Mesh(
     new THREE.ConeGeometry(PYR_BASE * 1.45, PYR_H * 1.15, 4, 1),
@@ -740,18 +1165,17 @@
       let m = THREE.MathUtils.clamp((B.home.y - revealY) / 2.6, 0, 1);
       m = m * m * (3 - 2 * m);
       if (m < 0.003) {
-        dummy.position.copy(B.home);
+        dummy.position.set(B.jx, B.jy, B.jz);
         dummy.scale.setScalar(0.0001);
-        dummy.quaternion.set(0, 0, 0, 1);
+        dummy.quaternion.copy(B.jquat);
         dummy.updateMatrix();
         pyramidMesh.setMatrixAt(i, dummy.matrix);
         continue;
       }
       if (B.isStatic) {
-        dummy.position.copy(B.home);
-        dummy.position.y += (1 - m) * 1.4;
-        dummy.quaternion.set(0, 0, 0, 1);
-        dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
+        dummy.position.set(B.jx, B.jy + (1 - m) * 1.4, B.jz);
+        dummy.quaternion.copy(B.jquat);
+        dummy.scale.set(BS_XZ * m * B.jsx * B.shrinkF, BS_Y * m * B.jsy * B.shrinkF, BS_XZ * m * B.jsz * B.shrinkF);
         dummy.updateMatrix();
         pyramidMesh.setMatrixAt(i, dummy.matrix);
         continue;
@@ -768,7 +1192,7 @@
       act += wave;
 
       /* wave: slides outward along its radial dir */
-      dummy.position.copy(B.home).addScaledVector(B.dir, wave * CFG.breathSep);
+      dummy.position.set(B.jx, B.jy, B.jz).addScaledVector(B.dir, wave * CFG.breathSep);
       dummy.position.y += (1 - m) * 1.4;               // soft drop-in while materializing
       /* hover: the block levitates — mostly upward lift + gentle bob,
          as if suspended mid-assembly over the structure */
@@ -777,13 +1201,13 @@
         dummy.position.addScaledVector(B.lift, si * CFG.hoverSep);
         dummy.position.y += bob;
         _q.setFromAxisAngle(B.spinAxis, si * (0.12 + Math.sin(tw * 0.6 + B.floatPhase) * 0.06));
-        dummy.quaternion.copy(_q);
+        dummy.quaternion.copy(B.jquat).multiply(_q);
       } else {
-        dummy.quaternion.set(0, 0, 0, 1);
+        dummy.quaternion.copy(B.jquat);
       }
       B.lastDisp = wave * CFG.breathSep + si * CFG.hoverSep;
 
-      dummy.scale.set(BS_XZ * m, BS_Y * m, BS_XZ * m);
+      dummy.scale.set(BS_XZ * m * B.jsx * B.shrinkF, BS_Y * m * B.jsy * B.shrinkF, BS_XZ * m * B.jsz * B.shrinkF);
       dummy.updateMatrix();
       pyramidMesh.setMatrixAt(i, dummy.matrix);
     }
@@ -804,7 +1228,7 @@
     const g = new THREE.BufferGeometry();
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     starField = new THREE.Points(g, new THREE.PointsMaterial({
-      color: 0xcdd6ef, size: 0.8, transparent: true, opacity: 0.85, fog: false
+      color: 0xd4c4a0, size: 0.7, transparent: true, opacity: 0.65, fog: false
     }));
     scene.add(starField);
   }
@@ -990,7 +1414,7 @@
   }
   const holoCore = new THREE.Mesh(
     new THREE.SphereGeometry(2.1, 24, 24),
-    new THREE.MeshBasicMaterial({ color: 0xffffff })
+    new THREE.MeshBasicMaterial({ color: 0xfff0d8 })
   );
   holoCore.position.set(0, PYR_H * 0.42, 0);
   const holoCoreGlow = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -1154,7 +1578,7 @@
         float haze = exp(-max(p.y, 0.0) * 0.09) * 0.55;
         vec3 wind = vec3(uTime * 4.5, 0.0, uTime * 0.6);   // strong lateral wind
         float n = fbm(p * 0.045 + wind * 0.05);
-        return (low + haze) * (0.55 + 0.75 * n) * 0.036 * uDensity;
+        return (low + haze) * (0.55 + 0.75 * n) * 0.016 * uDensity;
       }
       vec3 worldPos(vec2 uv, float depth){
         vec4 ndc  = vec4(uv * 2.0 - 1.0, depth * 2.0 - 1.0, 1.0);
@@ -1183,9 +1607,9 @@
           float d = density(p);
           float cd = length(p - uCorePos);
           vec3 light =
-            vec3(0.74, 0.71, 0.64) * 0.32 +                                              // grey dusty ambient
-            vec3(0.96, 0.98, 1.00) * (7.0 / (1.0 + cd * cd * 0.030)) * 0.085 * uEnergy + // intense white core
-            vec3(0.17, 0.18, 0.24) * 0.10;                                               // cool night sky
+            vec3(0.72, 0.62, 0.48) * 0.22 +                                              // warm dusty ambient
+            vec3(1.00, 0.82, 0.55) * (9.0 / (1.0 + cd * cd * 0.035)) * 0.11 * uEnergy + // intense warm core
+            vec3(0.14, 0.12, 0.16) * 0.06;                                               // dim warm night sky
           float a = d * stepL;
           L += T * light * a;
           T *= exp(-a);
@@ -1193,7 +1617,9 @@
           p += rd * stepL;
         }
         vec3 col = sceneCol * T + L;
-        col *= 1.0 - dot(q, q) * 0.5;
+        col *= 1.0 - dot(q, q) * 0.55;
+        float grain = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+        col += (grain - 0.5) * 0.022;
         gl_FragColor = vec4(col, 1.0);
       }
     `,
@@ -1698,6 +2124,12 @@
     coreLightLow.intensity = 1.0 * E * matC;
     coreHalo.material.opacity = (0.20 + 0.14 * (E - 1)) * matC;
     cap.material.emissiveIntensity = 1.7 + Math.sin(t * 1.4) * 0.5;
+    tetra.position.y = PYR_H + 2.5 + Math.sin(t * 0.7) * 0.28;
+    tetra.rotation.y = t * 0.12;
+    tetraMat.emissiveIntensity = 3.0 * (0.9 + Math.sin(t * 1.0) * 0.1);
+    tetraGlow.position.copy(tetra.position);
+    tetraLight.position.copy(tetra.position);
+    shaft.material.uniforms.uTime.value = t;
     volUniforms.uEnergy.value = E * 1.15 * matC;
 
     /* wind: sand sheets scrolling + streaks racing across the floor
