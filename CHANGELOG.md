@@ -2,6 +2,30 @@
 
 ## 2026-07-18
 
+### Added (scroll narrative, phase E)
+- **Journey system** — virtual scroll (wheel/touch/arrow keys, no scrollbar)
+  drives damped progress `p ∈ [0,1]`; camera flies a Catmull-Rom path of 5
+  waypoints whose first point IS the intro's final camera (seamless
+  intro→journey handoff; `p=0` is pixel-equivalent to the old resting shot).
+  Uses `getPoint` (uniform param), not `getPointAt` (arc length), so each
+  waypoint lands exactly on its keyframe and stays in sync with the per-leg
+  smootherstep look-target lerp.
+- **Five chapters** keyed to `p` windows: 01 El Monumento (rest), 02 La
+  Piedra (low close-up of the masonry), 03 La Tormenta (back side; the
+  sandstorm `windMul` ramps ×2.6 via a `stormBoost()` bell around p≈0.5),
+  04 El Prisma (high shot at prism level), 05 outro (wide pull-back, PYRA /
+  MMXXVI title). Chapter text fades by distance-to-window-midpoint with a
+  14px rise.
+- **HUD** — right-edge progress rail (fill bar + `01…05` counter) and a
+  bottom "SCROLL" hint that eases in after the intro and dies once the user
+  moves (hint owned per-frame by `updateJourneyUI`, not gsap, to avoid the
+  two writers fighting).
+- **QA hooks** — `?p=N` pins journey progress in `?still` mode. Playwright
+  run at p = 0/0.25/0.5/0.75/1: **0 page errors**, all chapter framings
+  above terrain, chapter copy legible.
+- Input guards: editor/timeline panels and INPUT elements don't feed the
+  journey; scrub mode (`tl.open`) takes precedence over journey camera.
+
 ### Changed (visual quality plan, phases D1-D4)
 - **Terrain lightmap re-bake with pyramid shadow caster (D1)** — new
   `tools/bake-d1.sh` pipeline (exports → pyramid bake → terrain bake →

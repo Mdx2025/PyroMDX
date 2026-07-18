@@ -64,6 +64,41 @@
 <!-- holographic AI network labels (birth phase) -->
 <svg id="holoNet" class="fixed inset-0 z-[5] pointer-events-none w-full h-full opacity-0"></svg>
 
+<!-- ============ JOURNEY (Phase E): scroll narrative chapters ============ -->
+<div id="journey" class="pointer-events-none">
+  <article data-ch="0" class="jchap fixed left-20 bottom-32 z-40 max-w-[340px] opacity-0 max-md:left-6 max-md:bottom-24">
+    <p class="font-mono text-[.6rem] tracking-[.4em] text-sand">01 / EL MONUMENTO</p>
+    <p class="mt-4 font-mono text-[.66rem] tracking-[.12em] leading-[1.9] text-dust">Una geometría exacta levantada donde el desierto no perdona. PYRA no fue construida — fue calculada.</p>
+  </article>
+  <article data-ch="1" class="jchap fixed right-20 bottom-32 z-40 max-w-[340px] text-right opacity-0 max-md:right-6 max-md:bottom-24">
+    <p class="font-mono text-[.6rem] tracking-[.4em] text-sand">02 / LA PIEDRA</p>
+    <p class="mt-4 font-mono text-[.66rem] tracking-[.12em] leading-[1.9] text-dust">169 bloques de arenisca, cada junta medida a la milésima. La masa recuerda lo que la mano olvida.</p>
+  </article>
+  <article data-ch="2" class="jchap fixed left-20 top-1/2 -translate-y-1/2 z-40 max-w-[340px] opacity-0 max-md:left-6">
+    <p class="font-mono text-[.6rem] tracking-[.4em] text-sand">03 / LA TORMENTA</p>
+    <p class="mt-4 font-mono text-[.66rem] tracking-[.12em] leading-[1.9] text-dust">El viento escribe y borra, escribe y borra. Solo la piedra conserva el argumento.</p>
+  </article>
+  <article data-ch="3" class="jchap fixed right-20 top-1/2 -translate-y-1/2 z-40 max-w-[340px] text-right opacity-0 max-md:right-6">
+    <p class="font-mono text-[.6rem] tracking-[.4em] text-sand">04 / EL PRISMA</p>
+    <p class="mt-4 font-mono text-[.66rem] tracking-[.12em] leading-[1.9] text-dust">En el vértice, la luz deja de dispersarse. Todo el cálculo converge en un solo punto ardiente.</p>
+  </article>
+  <article data-ch="4" class="jchap fixed inset-x-0 top-1/2 -translate-y-1/2 z-40 text-center opacity-0 px-6">
+    <p class="font-display font-bold text-[2rem] tracking-[.55em] text-bone [text-shadow:0_0_32px_rgba(239,228,207,.35)]">PYRA</p>
+    <p class="mt-6 font-mono text-[.62rem] tracking-[.3em] text-dust">MMXXVI — EL DESIERTO RECUERDA</p>
+  </article>
+</div>
+<!-- journey progress rail -->
+<div id="jRail" class="fixed right-8 top-1/2 -translate-y-1/2 z-50 flex flex-col items-center gap-3 opacity-0 max-md:right-3">
+  <span id="jChap" class="font-mono text-[.58rem] tracking-[.3em] text-bone">01</span>
+  <div class="w-px h-[140px] bg-hairline relative overflow-hidden"><i id="jFill" class="absolute top-0 left-0 w-full h-0 bg-sand block"></i></div>
+  <span class="font-mono text-[.58rem] tracking-[.3em] text-dust">05</span>
+</div>
+<!-- scroll hint -->
+<div id="jHint" class="fixed bottom-8 inset-x-0 z-50 flex flex-col items-center gap-2 opacity-0 pointer-events-none">
+  <span class="font-mono text-[.56rem] tracking-[.45em] text-dust">SCROLL</span>
+  <span class="block w-px h-6 bg-sand animate-pulse"></span>
+</div>
+
 <!-- loader -->
 <div class="fixed inset-0 z-[100] bg-night flex flex-col items-center justify-center gap-8" id="loader">
   <div class="loader-glyph relative w-[54px] h-[54px]"></div>
@@ -2088,7 +2123,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   if (STILL) {
     loader.style.display = 'none';
     state.intro = 1; state.introDone = true; state.phase = 'done';
-    ['#nav', '#soundBtn', '#toolBtns'].forEach(s => document.querySelectorAll(s).forEach(el => el.style.opacity = 1));
+    ['#nav', '#soundBtn', '#toolBtns', '#jRail'].forEach(s => document.querySelectorAll(s).forEach(el => el.style.opacity = 1));
   } else {
     const tick = setInterval(() => {
       fake = Math.min(100, fake + Math.random() * 9 + 3);
@@ -2102,7 +2137,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     gsap.to(loader, { opacity: 0, duration: 1.0, ease: 'power2.inOut', onComplete: () => loader.style.display = 'none' });
     gsap.delayedCall(0.4, tryAutoplay);
     playIntro();
-    gsap.to(['#nav', '#soundBtn', '#toolBtns'], {
+    gsap.to(['#nav', '#soundBtn', '#toolBtns', '#jRail'], {
       opacity: 1, duration: 1.4, ease: 'power2.out', stagger: 0.15,
       delay: reduced ? 0.8 : Math.max(0.8, CFG.introDuration - 1.0)
     });
@@ -2121,6 +2156,116 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       ease: 'power2.inOut',
       onComplete: () => { state.introDone = true; state.phase = 'done'; }
     });
+  }
+
+  /* ============================================================
+     JOURNEY (Phase E) — scroll-driven narrative after the intro.
+     Virtual scroll (wheel/touch/keys) → damped progress p ∈ [0,1];
+     camera flies a Catmull-Rom path whose first waypoint IS the
+     intro's final camera, so the handoff is seamless. Chapter text
+     overlays and the storm intensity are keyed to the same p.
+  ============================================================ */
+  const JOURNEY = [
+    { t: 0.00, pos: null,                          look: null },              /* = finalPos/finalLook */
+    { t: 0.25, pos: { x: 24,  y: 4.5, z: 30 },     look: { x: 4,  y: 5.5,  z: 0 } },
+    { t: 0.50, pos: { x: 6,   y: 3.5, z: -40 },    look: { x: -4, y: 8,    z: 0 } },
+    { t: 0.75, pos: { x: -14, y: 19,  z: 22 },     look: { x: 0,  y: 16.5, z: 0 } },
+    { t: 1.00, pos: { x: -34, y: 30,  z: 82 },     look: { x: 0,  y: 9,    z: 0 } },
+  ];
+  /* chapter text windows [in, out] in journey progress */
+  const CHAPTERS = [[0.00, 0.14], [0.20, 0.38], [0.45, 0.63], [0.70, 0.86], [0.93, 1.01]];
+  const jState = { tgt: 0, cur: 0, moved: false };
+  const P_PARAM = parseFloat(new URLSearchParams(location.search).get('p'));
+  if (!Number.isNaN(P_PARAM)) {
+    jState.tgt = jState.cur = THREE.MathUtils.clamp(P_PARAM, 0, 1);
+    jState.moved = true;
+  }
+
+  let jCurve = null, jTimes = [], jLooks = [];
+  const _jBuiltPos = new THREE.Vector3(), _jBuiltLook = new THREE.Vector3();
+  function buildJourneyPath() {
+    jCurve = new THREE.CatmullRomCurve3(JOURNEY.map(k =>
+      k.pos ? new THREE.Vector3(k.pos.x, k.pos.y, k.pos.z) : finalPos.clone()));
+    jTimes = JOURNEY.map(k => k.t);
+    jLooks = JOURNEY.map(k =>
+      k.look ? new THREE.Vector3(k.look.x, k.look.y, k.look.z) : finalLook.clone());
+    _jBuiltPos.copy(finalPos); _jBuiltLook.copy(finalLook);
+  }
+  buildJourneyPath();
+  const _jLook = new THREE.Vector3();
+  function sampleJourney(p, outPos, outLook) {
+    /* editor panel can move the rest camera live — rebuild if it changed */
+    if (!_jBuiltPos.equals(finalPos) || !_jBuiltLook.equals(finalLook)) buildJourneyPath();
+    const n = jTimes.length;
+    let i = 0;
+    while (i < n - 2 && p > jTimes[i + 1]) i++;
+    const t0 = jTimes[i], t1 = jTimes[i + 1];
+    const f = t1 > t0 ? THREE.MathUtils.clamp((p - t0) / (t1 - t0), 0, 1) : 0;
+    const u = THREE.MathUtils.clamp((i + f) / (n - 1), 0, 1);
+    /* getPoint (not getPointAt): uniform param hits each waypoint exactly
+       at its keyframe, keeping position and per-leg look in sync */
+    jCurve.getPoint(u, outPos);
+    const sf = f * f * f * (f * (f * 6 - 15) + 10); /* smootherstep per leg */
+    outLook.copy(jLooks[i]).lerp(jLooks[i + 1], sf);
+  }
+  /* storm bell around chapter 3 (p≈0.5): wind + sand ramp up mid-journey */
+  function stormBoost() {
+    const p = jState.cur;
+    return 1 + 1.6 * THREE.MathUtils.smoothstep(p, 0.32, 0.50)
+                   * (1 - THREE.MathUtils.smoothstep(p, 0.60, 0.78));
+  }
+
+  /* ---- input: wheel / touch / keys → target progress ---- */
+  const J_WHEEL = 0.00042, J_TOUCH = 0.0016, J_KEY = 0.12;
+  const inPanel = el => el && el.closest && el.closest('#editorPanel, #timelinePanel');
+  function jNudge(d) {
+    if (!state.introDone || tl.open) return;
+    jState.tgt = THREE.MathUtils.clamp(jState.tgt + d, 0, 1);
+    jState.moved = true;
+  }
+  window.addEventListener('wheel', e => {
+    if (inPanel(e.target)) return;
+    jNudge(e.deltaY * (e.deltaMode === 1 ? 16 : 1) * J_WHEEL * 16);
+  }, { passive: true });
+  let _touchY = null;
+  window.addEventListener('touchstart', e => { _touchY = e.touches[0].clientY; }, { passive: true });
+  window.addEventListener('touchmove', e => {
+    if (_touchY === null || inPanel(e.target)) return;
+    jNudge((_touchY - e.touches[0].clientY) * J_TOUCH);
+    _touchY = e.touches[0].clientY;
+  }, { passive: true });
+  window.addEventListener('keydown', e => {
+    if (inPanel(e.target) || e.target.tagName === 'INPUT') return;
+    if (e.key === 'ArrowDown' || e.key === 'PageDown' || e.key === ' ') jNudge(J_KEY);
+    else if (e.key === 'ArrowUp' || e.key === 'PageUp') jNudge(-J_KEY);
+  });
+
+  /* ---- HUD + chapter overlays, driven per-frame from jState.cur ---- */
+  const jChaps = [...document.querySelectorAll('#journey .jchap')];
+  const jFill = document.getElementById('jFill');
+  const jChapNum = document.getElementById('jChap');
+  const jHint = document.getElementById('jHint');
+  let _jChapShown = -1, _jHintO = 0;
+  function updateJourneyUI() {
+    const p = jState.cur;
+    jFill.style.height = (p * 100).toFixed(2) + '%';
+    let active = 0;
+    for (let i = 0; i < CHAPTERS.length; i++) {
+      const [a, b] = CHAPTERS[i];
+      const mid = (a + b) / 2, half = (b - a) / 2;
+      const vis = 1 - THREE.MathUtils.clamp((Math.abs(p - mid) - half * 0.55) / (half * 0.45), 0, 1);
+      const el = jChaps[i];
+      el.style.opacity = vis.toFixed(3);
+      el.style.transform = (el.dataset.ch === '4' || el.dataset.ch === '2' || el.dataset.ch === '3')
+        ? `translateY(calc(-50% + ${((1 - vis) * 14).toFixed(1)}px))`
+        : `translateY(${((1 - vis) * 14).toFixed(1)}px)`;
+      if (p >= a) active = i;
+    }
+    const shown = active + 1;
+    if (shown !== _jChapShown) { _jChapShown = shown; jChapNum.textContent = String(shown).padStart(2, '0'); }
+    const hintTgt = !state.introDone ? 0 : (jState.moved ? Math.max(0, 1 - p * 12) : 1);
+    _jHintO += (hintTgt - _jHintO) * 0.05;
+    jHint.style.opacity = _jHintO.toFixed(3);
   }
 
   /* ============================================================
@@ -2378,8 +2523,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
       sampleIntroPos(tl.head, camPos);
       camLook.copy(introLook).lerp(finalLook, tl.head);
     } else {
-      camPos.copy(finalPos);
-      camLook.copy(finalLook);
+      jState.cur = STILL ? jState.tgt
+        : jState.cur + (jState.tgt - jState.cur) * Math.min(1, dt * 3.5);
+      sampleJourney(jState.cur, camPos, camLook);
     }
 
     if (!reduced) {
@@ -2406,6 +2552,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     updateHover();
     updatePyramid(t);
     updateOverlay();
+    updateJourneyUI();
 
     /* blueprint pyramid */
     holoGroup.visible = wireOut > 0.01;
@@ -2463,7 +2610,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 
     /* D2 sandstorm: billows drift, veils breathe, grain rides the wind,
        gusts accent (all fade in with the materialization) */
-    const windMul = reduced ? 0.25 : 1;
+    const windMul = (reduced ? 0.25 : 1) * stormBoost();
     for (let i = 0; i < sandSheets.length; i++) {
       const sh = sandSheets[i];
       sh.userData.tex.offset.x -= sh.userData.speed * dt * windMul;
