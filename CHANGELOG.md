@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-07-19
+
+### Changed
+- **Marcelo's tuned look baked as defaults** (from the Ajustes panel's Copy
+  JSON): heavier ruin deformity (jitter ×3.9, yaw ×3.4, tilt ×4.4, scale
+  var ×4.2, layer drift ×1.05, mesh displacement 0.065), wider stone crop
+  (U 0.61), more accumulated sand (0.52), stronger/denser/farther dune
+  ripples (0.95 / 7.3 / 100), brighter fill (hemi 0.8, moon 0.34, ambient
+  0.9), softer block normal (0.75) with more IBL (0.85 block / 0.3 ground),
+  storm density 1.3 + grain opacity 0.98 (size 0.055) + storm peak 2.4,
+  prism light 7.5 + halo 0.55 + glow 0.68. Panel Reset anchors to these
+  values. NOTE: at this deformity the baked block-shadow atlas visibly
+  misaligns — acceptable per direction; a re-bake with the same multipliers
+  in the exporter is the fix if it starts to bother.
+
 ## 2026-07-18
 
 ### Added (live tuning panel, "Ajustes")
