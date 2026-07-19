@@ -311,26 +311,27 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
      TUNEU/GNDU: shared uniform objects, assigned into the block/ground
      shaders at compile time so sliders work before AND after compile.
   ============================================================ */
+  /* Defaults tuned live by Marcelo 2026-07-19 (panel Copy JSON). */
   const TUNE = {
-    defLayer: 1, defJitter: 1, defYaw: 1, defTilt: 1, defScale: 1, defShrink: 1,
-    wind: 1, stormO: 1, stormPeak: 1.6, grainO: 0.4,
+    defLayer: 1.05, defJitter: 3.9, defYaw: 3.4, defTilt: 4.4, defScale: 4.2, defShrink: 1,
+    wind: 0.9, stormO: 1.3, stormPeak: 2.4, grainO: 0.98,
     jSpeed: 1, jDamp: 3.5,
-    prismEmis: 2.2, prismHalo: 0.16
+    prismEmis: 2.2, prismHalo: 0.55
   };
   const TUNEU = {
-    uCropU:     { value: 0.5 },  uCropV:      { value: 0.18 },
-    uDispAmp:   { value: 0.04 },
+    uCropU:     { value: 0.61 }, uCropV:      { value: 0.18 },
+    uDispAmp:   { value: 0.065 },
     uLmMix:     { value: 0.45 }, uLmGain:     { value: 1.45 },
     uAoMix:     { value: 0.38 },
     uJointW:    { value: 0.055 }, uJointDark: { value: 0.22 },
     uCarveK:    { value: 0.20 }, uCarveRelief:{ value: 0.55 },
-    uSandK:     { value: 0.42 }, uDetailN:    { value: 0.35 },
+    uSandK:     { value: 0.52 }, uDetailN:    { value: 0.35 },
     uRoughVar:  { value: 1.0 }
   };
   const GNDU = {
     uGLmMix:    { value: 0.62 },
-    uRippleK:   { value: 0.5 }, uRippleFreq: { value: 3.6 },
-    uRippleFade:{ value: 85 }
+    uRippleK:   { value: 0.95 }, uRippleFreq: { value: 7.3 },
+    uRippleFade:{ value: 100 }
   };
 
   const scene = new THREE.Scene();
@@ -340,9 +341,9 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const camera = new THREE.PerspectiveCamera(CFG.fov, innerWidth / innerHeight, 0.1, 900);
 
   /* ---- lights (no visible sun, desaturated grey-desert rig) ---- */
-  const ambLight = new THREE.AmbientLight(0x3a2f24, 1.0);
+  const ambLight = new THREE.AmbientLight(0x3a2f24, 0.9);
   scene.add(ambLight);
-  const hemiLight = new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.55);
+  const hemiLight = new THREE.HemisphereLight(0x2a2620, 0x4a3e2e, 0.8);
   scene.add(hemiLight);
   /* D1: key from upper-right, matching the baked rig in tools/blender-bake.py
      (blender (48,-30,26) -> three (48,26,30)) so runtime speculars/normal maps
@@ -356,7 +357,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   keyLight.shadow.camera.near = 1;   keyLight.shadow.camera.far = 220;
   keyLight.shadow.bias = -0.0006;
   scene.add(keyLight);
-  const moonLight = new THREE.DirectionalLight(0xb0a890, 0.22);
+  const moonLight = new THREE.DirectionalLight(0xb0a890, 0.34);
   moonLight.position.set(-30, 55, 25);
   scene.add(moonLight);
 
@@ -613,7 +614,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     map: sandColorTexPBR, normalMap: sandNormalTexPBR,
     color: 0xcabda6, roughness: 1.0, metalness: 0,
     normalScale: new THREE.Vector2(1.0, 1.0),
-    envMapIntensity: 0.25  /* IBL: diffuse fill only — full env spec streaks on dune ripples */
+    envMapIntensity: 0.3  /* IBL: diffuse fill only — full env spec streaks on dune ripples */
   }));
   injectReveal(ground.material);                       // materializes as a circle
   {
@@ -895,8 +896,8 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     map: stoneColorTex, normalMap: stoneNormalTex,
     roughnessMap: stoneRoughTex,
     color: 0xf5e8d0, roughness: 0.95, metalness: 0.02,
-    normalScale: new THREE.Vector2(1.6, 1.6),
-    envMapIntensity: 0.6,
+    normalScale: new THREE.Vector2(0.75, 0.75),
+    envMapIntensity: 0.85,
     emissive: 0x1a1008, emissiveIntensity: 0.06   /* reduced: lightmap provides base warmth */
   });
   /* ---- PRO realism: per-instance variation + detail normal + roughness breakup ---- */
@@ -1264,7 +1265,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     map: tetraGlowTex, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true
   }));
   tetraGlow.scale.set(3.0, 3.0, 1);
-  tetraGlow.material.opacity = 0.65;
+  tetraGlow.material.opacity = 0.68;
   tetraGlow.position.copy(tetra.position);
   scene.add(tetraGlow);
   /* D4: wide faint halo — poor-man's bloom around the prism (the reference
@@ -1276,7 +1277,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   tetraHalo.scale.set(10.5, 10.5, 1);
   tetraHalo.position.copy(tetra.position);
   scene.add(tetraHalo);
-  const tetraLight = new THREE.PointLight(0xffe8cc, 10, 30, 2);
+  const tetraLight = new THREE.PointLight(0xffe8cc, 7.5, 30, 2);
   tetraLight.position.copy(tetra.position);
   scene.add(tetraLight);
   /* light shaft from tetra down to apex */
@@ -1699,7 +1700,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const grainGeo = new THREE.BufferGeometry();
   grainGeo.setAttribute('position', new THREE.BufferAttribute(grainPos, 3));
   const grain = new THREE.Points(grainGeo, new THREE.PointsMaterial({
-    color: 0xd8cbaa, size: 0.07, transparent: true, opacity: 0.4,
+    color: 0xd8cbaa, size: 0.055, transparent: true, opacity: 0.4,
     depthWrite: false, sizeAttenuation: true
   }));
   scene.add(grain);
