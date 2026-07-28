@@ -2328,7 +2328,10 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   }
 
   /* ---- input: wheel / touch / keys → target progress ---- */
-  const J_WHEEL = 0.00042, J_TOUCH = 0.0016, J_KEY = 0.12;
+  /* deltaMode already normalises line-scroll to pixels, so the per-pixel
+     constants are the only scale factor: one 100px wheel notch = ~4% of the
+     journey (~24 notches end to end), a 600px swipe = ~24%. */
+  const J_WHEEL = 0.00042, J_TOUCH = 0.0004, J_KEY = 0.06;
   const inPanel = el => el && el.closest && el.closest('#editorPanel, #timelinePanel, #tunePanel');
   function jNudge(d) {
     if (!state.introDone || tl.open) return;
@@ -2337,7 +2340,7 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   }
   window.addEventListener('wheel', e => {
     if (inPanel(e.target)) return;
-    jNudge(e.deltaY * (e.deltaMode === 1 ? 16 : 1) * J_WHEEL * 16);
+    jNudge(e.deltaY * (e.deltaMode === 1 ? 16 : 1) * J_WHEEL);
   }, { passive: true });
   let _touchY = null;
   window.addEventListener('touchstart', e => { _touchY = e.touches[0].clientY; }, { passive: true });

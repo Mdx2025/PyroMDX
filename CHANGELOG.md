@@ -3,6 +3,16 @@
 ## 2026-07-28
 
 ### Fixed
+- **Journey scroll was 16x too sensitive.** The wheel handler multiplied by
+  16 twice: `e.deltaMode === 1 ? 16 : 1` already normalises line-scroll to
+  pixels, and a second literal `* 16` was applied on top. One 100px notch
+  advanced the camera 67% of the whole journey, so a single flick flew from
+  the hero shot to the closing aerial. Dropping the stray factor restores the
+  value `J_WHEEL` was calibrated for: 4.2% per notch, ~24 notches end to end
+  (verified headless with real wheel events). Touch and keys were rescaled to
+  match — a 600px swipe is 24% instead of 96%, arrow keys 6% instead of 12%.
+  Note the `Velocidad scroll` slider (0.2–4) could not have compensated: the
+  fix needed a 1/16 multiplier, outside its range.
 - **Sandstorm no longer reads as clipped.** Three separate causes of hard
   edges in the D2 storm:
   - The ground billows were `PlaneGeometry(260, 260)` (±130) while the
