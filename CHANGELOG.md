@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-07-28
+
+### Fixed
+- **Sandstorm no longer reads as clipped.** Three separate causes of hard
+  edges in the D2 storm:
+  - The ground billows were `PlaneGeometry(260, 260)` (±130) while the
+    terrain spans 760 (±380), so the low haze ended in a straight line
+    across the desert with fog at only ~11% there to hide it. They now
+    share the terrain's exact grid (760 span, 240 segments).
+  - Being flat at y 0.5 / 1.15 they were buried under the dunes (midfield
+    relief reaches 6.5+), surfacing only in valleys with hard
+    terrain-intersection contours. The sheets now ride `duneH` + their
+    offset, so they hug the dunes instead of cutting through them. The
+    second sheet's variation moved from `mesh.rotation.z` to
+    `texture.rotation` (rotating the mesh would misalign the displacement).
+  - The tiled dust texture's alpha doesn't fall to zero at the quad border,
+    so both the sheets and the three veil sprites showed their own
+    rectangle. New `injectEdgeFade()` masks alpha from the raw uv —
+    radial for the sheets, separable for the veils. It can't be an
+    `alphaMap`: three r128 shares one `uvTransform` per material, so the
+    mask would scroll along with the dust.
+- Texture repeat rescaled (3 → 8.8, 2 → 5.8) to preserve grain size at the
+  new sheet span.
+
 ## 2026-07-19
 
 ### Changed

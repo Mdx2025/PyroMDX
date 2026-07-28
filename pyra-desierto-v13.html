@@ -1633,25 +1633,53 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
   const streakTex = makeStreakTexture();
   const dustTex = makeDustTexture();
 
-  /* 1) ground billows — slow drifting dust hugging the floor */
+  /* The dust texture tiles and scrolls, so its alpha never falls to zero at the
+     quad border and the sheet/veil shows its own rectangle. r128 shares a single
+     uvTransform across a material's maps, so an alphaMap would scroll with the
+     dust — the mask is derived from the raw (untransformed) uv instead. */
+  function injectEdgeFade(material, { radial = false, fx = 0.16, fy = 0.28 } = {}) {
+    const f = n => n.toFixed(3);
+    material.onBeforeCompile = shader => {
+      shader.vertexShader = shader.vertexShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vEdgeUv;')
+        .replace('#include <uv_vertex>', '#include <uv_vertex>\n\tvEdgeUv = uv;');
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec2 vEdgeUv;')
+        .replace('#include <alphamap_fragment>', `#include <alphamap_fragment>
+          ${radial
+            ? 'diffuseColor.a *= 1.0 - smoothstep(0.34, 0.5, length(vEdgeUv - 0.5));'
+            : `diffuseColor.a *= smoothstep(0.0, ${f(fx)}, vEdgeUv.x) * (1.0 - smoothstep(${f(1 - fx)}, 1.0, vEdgeUv.x))
+                               * smoothstep(0.0, ${f(fy)}, vEdgeUv.y) * (1.0 - smoothstep(${f(1 - fy)}, 1.0, vEdgeUv.y));`}`);
+    };
+    material.needsUpdate = true;
+  }
+
+  /* 1) ground billows — slow drifting dust hugging the floor.
+     Shares the terrain's exact grid (760 span, 240 segments) and rides duneH,
+     so the haze reaches as far as the dunes do and can never be cut by them. */
   const sandSheets = [];
+  const billowGeo = new THREE.PlaneGeometry(760, 760, 240, 240);
+  billowGeo.rotateX(-Math.PI / 2);
+  {
+    const p = billowGeo.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setY(i, duneH(p.getX(i), p.getZ(i)));
+  }
   [
-    { y: 0.5, repeat: 3, opacity: 0.20, speed: 0.045, rotY: 0 },
-    { y: 1.15, repeat: 2, opacity: 0.12, speed: 0.028, rotY: 0.22 }
+    { y: 0.5, repeat: 8.8, opacity: 0.20, speed: 0.045, rotY: 0 },
+    { y: 1.15, repeat: 5.8, opacity: 0.12, speed: 0.028, rotY: 0.22 }
   ].forEach(cfg => {
     const tex = dustTex.clone();
     tex.needsUpdate = true;
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(cfg.repeat, cfg.repeat);
-    const mesh = new THREE.Mesh(
-      new THREE.PlaneGeometry(260, 260),
-      new THREE.MeshBasicMaterial({
-        map: tex, transparent: true, opacity: cfg.opacity,
-        depthWrite: false, color: 0xcfc2a4
-      })
-    );
-    mesh.rotation.x = -Math.PI / 2;
-    mesh.rotation.z = cfg.rotY;
+    tex.center.set(0.5, 0.5);
+    tex.rotation = cfg.rotY;
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: cfg.opacity,
+      depthWrite: false, color: 0xcfc2a4
+    });
+    injectEdgeFade(mat, { radial: true });
+    const mesh = new THREE.Mesh(billowGeo, mat);
     mesh.position.y = cfg.y;
     mesh.userData = { tex, speed: cfg.speed, baseO: cfg.opacity };
     scene.add(mesh);
@@ -1670,10 +1698,12 @@ import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
     tex.needsUpdate = true;
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.repeat.set(2, 1);
-    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    const mat = new THREE.SpriteMaterial({
       map: tex, transparent: true, depthWrite: false,
       color: 0xbfb098, opacity: cfg.o
-    }));
+    });
+    injectEdgeFade(mat);
+    const sp = new THREE.Sprite(mat);
     sp.position.set(cfg.x, cfg.y, cfg.z);
     sp.scale.set(cfg.sx, cfg.sy, 1);
     sp.userData = { tex, speed: cfg.speed, baseO: cfg.o };
