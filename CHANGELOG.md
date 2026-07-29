@@ -2,6 +2,16 @@
 
 ## 2026-07-28
 
+### Changed
+- **Closing chapter overlay is readable.** The `PYRA` block sat at `top-1/2`,
+  i.e. dead centre — exactly where the pyramid renders — and its subtitle used
+  `text-dust` (cream at 45%), which washed out against sunlit sand. It now
+  centres at `top-[26%]`, clear of the apex and against sky/far dunes, and the
+  subtitle is `text-bone/80`. All chapter copy also gained a night-coloured
+  halo (`.jchap p`) so contrast comes from the backdrop instead of tinting the
+  type; `.jchap .jtitle` carries the same halo plus the title's cream glow,
+  which a bare Tailwind arbitrary class would have lost to specificity.
+
 ### Fixed
 - **Journey scroll was 16x too sensitive.** The wheel handler multiplied by
   16 twice: `e.deltaMode === 1 ? 16 : 1` already normalises line-scroll to
